@@ -19,6 +19,9 @@ on hardware (ESP32-S2, ESP-IDF 5.5.4) in the [mppt-1k](https://github.com/AramVa
 ## Features
 
 - Credentials stored in NVS (namespace `cwifi`); STA with automatic reconnect.
+- **The stored network is never given up**: failed attempts come in bursts with a pause in between
+  (default 5 attempts, then 2 min), so the device reconnects by itself as soon as the router is back
+  (e.g. after a power cut, when the router starts slower than the device).
 - No stored network, or the stored one never answers since boot → SoftAP with a captive portal:
   - DNS server answering every name with `192.168.4.1`;
   - DHCP option 114 (captive-portal URI) — the sign-in page opens by itself on iOS, Android and Windows;
@@ -32,10 +35,16 @@ on hardware (ESP32-S2, ESP-IDF 5.5.4) in the [mppt-1k](https://github.com/AramVa
 
 ## Behaviour
 
-1. `captive_wifi_start()`: credentials in NVS → STA, connect with retries.
+1. `captive_wifi_start()`: credentials in NVS → STA, connect. Failed attempts come in bursts of
+   `CONFIG_CAPTIVE_WIFI_RETRY_BURST`, with `CONFIG_CAPTIVE_WIFI_RETRY_PAUSE_S` between bursts — forever.
 2. No credentials, or `CONFIG_CAPTIVE_WIFI_MAX_RETRIES` failed attempts without ever connecting since
    boot → SoftAP `<prefix>-xxxxxx` (prefix from Kconfig, last 3 bytes of the MAC),
    open or WPA2 with the Kconfig password.
+   While the portal is open and a network is stored, the stored network is **tried in the background**
+   once per pause (APSTA mode); as soon as it connects, the portal closes by itself. The device never
+   stays in the portal without trying the network it already knows. During such an attempt the
+   SoftAP may follow the station to another channel for a moment, so a phone on the portal can drop
+   briefly (single 2.4 GHz radio — the same on ESP32, -S2, -S3, -C3, -C6).
 3. Portal endpoints: `/` (page), `/scan`, `/connect`, `/status`; any other URL redirects to the page.
 4. The device tries the chosen network; the page polls `/status`. A failed attempt (3 disconnects
    or 30 s) is reported on the page and with `CAPTIVE_WIFI_EVT_PORTAL_CONNECT_FAILED`.
@@ -86,8 +95,9 @@ captive_wifi_start();
 |---|---|---|
 | `CONFIG_CAPTIVE_WIFI_AP_SSID_PREFIX` | `ESP` | Short device name for the SoftAP: `<prefix>-XXXXXX` (max 24 characters) |
 | `CONFIG_CAPTIVE_WIFI_AP_PASSWORD` | empty | SoftAP password (empty = open network) |
-| `CONFIG_CAPTIVE_WIFI_MAX_RETRIES` | 10 | Failed connection attempts before the portal starts |
-| `CONFIG_CAPTIVE_WIFI_PORTAL_TIMEOUT_MIN` | 0 | Portal timeout in minutes (0 = stay in the portal until configured) |
+| `CONFIG_CAPTIVE_WIFI_MAX_RETRIES` | 10 | Failed attempts (never connected since boot) before the portal starts |
+| `CONFIG_CAPTIVE_WIFI_RETRY_BURST` | 5 | Connection attempts in a row before a pause |
+| `CONFIG_CAPTIVE_WIFI_RETRY_PAUSE_S` | 120 | Pause between bursts, and between background attempts while the portal is open (10 – 120 s) |
 
 ## Using it in a project
 

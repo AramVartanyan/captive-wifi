@@ -16,10 +16,26 @@ menu "Captive Wi-Fi"
         int "Failed connection attempts before the portal starts"
         range 1 100
         default 10
+        help
+            Only when the stored network has not answered once since boot (e.g. a wrong or
+            changed network): after this many failed attempts the setup portal opens. The
+            stored network keeps being tried in the background while the portal is open.
 
-    config CAPTIVE_WIFI_PORTAL_TIMEOUT_MIN
-        int "Portal timeout (min, 0 = stay in portal until configured)"
-        range 0 1440
-        default 0
+    config CAPTIVE_WIFI_RETRY_BURST
+        int "Connection attempts in a row before a pause"
+        range 1 50
+        default 5
+        help
+            The stored network is never given up: after this many failed attempts in a row
+            the component waits CAPTIVE_WIFI_RETRY_PAUSE_S and starts the next burst.
+
+    config CAPTIVE_WIFI_RETRY_PAUSE_S
+        int "Pause between bursts of attempts (s)"
+        range 10 120
+        default 120
+        help
+            Pause between bursts of connection attempts to the stored network. While the setup
+            portal is open, the stored network is also tried once per pause in the background,
+            and the portal closes as soon as it connects. A restarting router needs about 2 min.
 
 endmenu

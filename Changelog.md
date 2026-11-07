@@ -17,6 +17,20 @@ versions follow [Semantic Versioning](https://semver.org/).
 - `CONFIG_CAPTIVE_WIFI_AP_SSID_PREFIX` — short device name for the setup SoftAP
   (`<prefix>-XXXXXX`, default `ESP`, max 24 characters). Replaces the fixed `MPPT-` prefix,
   so the component can be shared between projects (mppt-1k: `MPPT`).
+- The stored network is never given up: failed attempts come in bursts
+  (`CONFIG_CAPTIVE_WIFI_RETRY_BURST`, default 5) with a pause in between
+  (`CONFIG_CAPTIVE_WIFI_RETRY_PAUSE_S`, default 120 s, max 120 s), forever.
+- While the portal is open and a network is stored, the stored network is tried in the background
+  once per pause (APSTA); when it connects, the portal closes by itself (`PORTAL_STOPPED`, then
+  `STA_CONNECTED`). A connection started from the page takes priority over the background attempt.
+
+### Removed
+- `CONFIG_CAPTIVE_WIFI_PORTAL_TIMEOUT_MIN` — replaced by the background attempts above. With the old
+  default (0) the device stayed in the portal forever after a power cut in which the router started
+  slower than the device.
+
+### Fixed
+- `captive_wifi_stop()`: the disconnect caused by stopping Wi-Fi no longer calls `esp_wifi_connect()`.
 
 ## [0.2.0] — 2026-10-31 (developed in mppt-1k, tested on hardware)
 
