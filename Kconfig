@@ -32,7 +32,7 @@ menu "Captive Wi-Fi"
     config CAPTIVE_WIFI_RETRY_PAUSE_S
         int "Pause between bursts of attempts (s)"
         range 10 120
-        default 120
+        default 60
         help
             Pause between bursts of connection attempts to the stored network. While the setup
             portal is open, the stored network is also tried once per pause in the background,

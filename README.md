@@ -20,7 +20,7 @@ on hardware (ESP32-S2, ESP-IDF 5.5.4) in the [mppt-1k](https://github.com/AramVa
 
 - Credentials stored in NVS (namespace `cwifi`); STA with automatic reconnect.
 - **The stored network is never given up**: failed attempts come in bursts with a pause in between
-  (default 5 attempts, then 2 min), so the device reconnects by itself as soon as the router is back
+  (default 5 attempts, then 1 min), so the device reconnects by itself as soon as the router is back
   (e.g. after a power cut, when the router starts slower than the device).
 - No stored network, or the stored one never answers since boot → SoftAP with a captive portal:
   - DNS server answering every name with `192.168.4.1`;
@@ -97,7 +97,7 @@ captive_wifi_start();
 | `CONFIG_CAPTIVE_WIFI_AP_PASSWORD` | empty | SoftAP password (empty = open network) |
 | `CONFIG_CAPTIVE_WIFI_MAX_RETRIES` | 10 | Failed attempts (never connected since boot) before the portal starts |
 | `CONFIG_CAPTIVE_WIFI_RETRY_BURST` | 5 | Connection attempts in a row before a pause |
-| `CONFIG_CAPTIVE_WIFI_RETRY_PAUSE_S` | 120 | Pause between bursts, and between background attempts while the portal is open (10 – 120 s) |
+| `CONFIG_CAPTIVE_WIFI_RETRY_PAUSE_S` | 60 | Pause between bursts, and between background attempts while the portal is open (10 – 120 s) |
 
 ## Using it in a project
 

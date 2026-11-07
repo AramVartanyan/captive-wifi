@@ -19,7 +19,7 @@ versions follow [Semantic Versioning](https://semver.org/).
   so the component can be shared between projects (mppt-1k: `MPPT`).
 - The stored network is never given up: failed attempts come in bursts
   (`CONFIG_CAPTIVE_WIFI_RETRY_BURST`, default 5) with a pause in between
-  (`CONFIG_CAPTIVE_WIFI_RETRY_PAUSE_S`, default 120 s, max 120 s), forever.
+  (`CONFIG_CAPTIVE_WIFI_RETRY_PAUSE_S`, default 60 s, max 120 s), forever.
 - While the portal is open and a network is stored, the stored network is tried in the background
   once per pause (APSTA); when it connects, the portal closes by itself (`PORTAL_STOPPED`, then
   `STA_CONNECTED`). A connection started from the page takes priority over the background attempt.
