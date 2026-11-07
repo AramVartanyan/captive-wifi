@@ -13,8 +13,8 @@ Wi-Fi station management with a captive-portal fallback for **ESP-IDF 5.x**.
 
 Created by Aram Vartanyan, (C) 2026. MIT licence (see [LICENSE](LICENSE)).
 
-**Version:** 0.2.0 — tested on hardware (ESP32-S2, ESP-IDF 5.5.4) in the
-[mppt-1k](https://github.com/AramVartanyan/mppt-1k) project.
+**Version:** 0.2.1 (in development, not tested yet). The last tested version is 0.2.0 —
+on hardware (ESP32-S2, ESP-IDF 5.5.4) in the [mppt-1k](https://github.com/AramVartanyan/mppt-1k) project.
 
 ## Features
 
@@ -34,7 +34,7 @@ Created by Aram Vartanyan, (C) 2026. MIT licence (see [LICENSE](LICENSE)).
 
 1. `captive_wifi_start()`: credentials in NVS → STA, connect with retries.
 2. No credentials, or `CONFIG_CAPTIVE_WIFI_MAX_RETRIES` failed attempts without ever connecting since
-   boot → SoftAP `MPPT-xxxxxx` (last 3 bytes of the MAC; the prefix is still fixed in 0.2.0),
+   boot → SoftAP `<prefix>-xxxxxx` (prefix from Kconfig, last 3 bytes of the MAC),
    open or WPA2 with the Kconfig password.
 3. Portal endpoints: `/` (page), `/scan`, `/connect`, `/status`; any other URL redirects to the page.
 4. The device tries the chosen network; the page polls `/status`. A failed attempt (3 disconnects
@@ -84,6 +84,7 @@ captive_wifi_start();
 
 | Option | Default | Description |
 |---|---|---|
+| `CONFIG_CAPTIVE_WIFI_AP_SSID_PREFIX` | `ESP` | Short device name for the SoftAP: `<prefix>-XXXXXX` (max 24 characters) |
 | `CONFIG_CAPTIVE_WIFI_AP_PASSWORD` | empty | SoftAP password (empty = open network) |
 | `CONFIG_CAPTIVE_WIFI_MAX_RETRIES` | 10 | Failed connection attempts before the portal starts |
 | `CONFIG_CAPTIVE_WIFI_PORTAL_TIMEOUT_MIN` | 0 | Portal timeout in minutes (0 = stay in the portal until configured) |

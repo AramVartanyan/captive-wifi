@@ -11,6 +11,13 @@ versions follow [Semantic Versioning](https://semver.org/).
   the ESP-IDF captive_portal example, features, behaviour, API, Kconfig, integration notes.
 - `Changelog.md` — this file, with the history from the mppt-1k project.
 
+## [0.2.1] — in development (not tested)
+
+### Added
+- `CONFIG_CAPTIVE_WIFI_AP_SSID_PREFIX` — short device name for the setup SoftAP
+  (`<prefix>-XXXXXX`, default `ESP`, max 24 characters). Replaces the fixed `MPPT-` prefix,
+  so the component can be shared between projects (mppt-1k: `MPPT`).
+
 ## [0.2.0] — 2026-10-31 (developed in mppt-1k, tested on hardware)
 
 ### Added
