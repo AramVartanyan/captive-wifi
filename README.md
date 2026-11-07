@@ -34,7 +34,8 @@ Created by Aram Vartanyan, (C) 2026. MIT licence (see [LICENSE](LICENSE)).
 
 1. `captive_wifi_start()`: credentials in NVS → STA, connect with retries.
 2. No credentials, or `CONFIG_CAPTIVE_WIFI_MAX_RETRIES` failed attempts without ever connecting since
-   boot → SoftAP `<prefix>-xxxxxx` (last 3 bytes of the MAC), open or WPA2 with the Kconfig password.
+   boot → SoftAP `MPPT-xxxxxx` (last 3 bytes of the MAC; the prefix is still fixed in 0.2.0),
+   open or WPA2 with the Kconfig password.
 3. Portal endpoints: `/` (page), `/scan`, `/connect`, `/status`; any other URL redirects to the page.
 4. The device tries the chosen network; the page polls `/status`. A failed attempt (3 disconnects
    or 30 s) is reported on the page and with `CAPTIVE_WIFI_EVT_PORTAL_CONNECT_FAILED`.

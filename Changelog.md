@@ -37,4 +37,3 @@ versions follow [Semantic Versioning](https://semver.org/).
   STA netif with hostname, `WIFI_INIT_CONFIG_DEFAULT`, reconnect on disconnect, IPv6 link-local;
   dropped `wifi_provisioning` (deprecated in ESP-IDF 5.x), QR code, WAC and hard-coded credentials.
 
-[Unreleased]: https://github.com/AramVartanyan/captive-wifi/compare/v0.2.0...HEAD
