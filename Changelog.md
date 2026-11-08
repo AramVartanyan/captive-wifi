@@ -24,6 +24,12 @@ versions follow [Semantic Versioning](https://semver.org/).
   once per pause (APSTA); when it connects, the portal closes by itself (`PORTAL_STOPPED`, then
   `STA_CONNECTED`). A connection started from the page takes priority over the background attempt.
 
+### Changed
+- Portal page restyled after the iOS Settings look: grouped grey background (`#F2F1F6`), white
+  inset groups with 24 px corners and inset separators, capsule buttons — "Connect" in green
+  (`#66C468`), "Scan again" in blue (`#3F88F2`), the chosen network in blue with a checkmark,
+  system font.
+
 ### Removed
 - `CONFIG_CAPTIVE_WIFI_PORTAL_TIMEOUT_MIN` — replaced by the background attempts above. With the old
   default (0) the device stayed in the portal forever after a power cut in which the router started
