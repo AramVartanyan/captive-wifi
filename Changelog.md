@@ -28,7 +28,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Portal page restyled after the iOS Settings look: grouped grey background (`#F2F1F6`), white
   inset groups with 24 px corners and inset separators, capsule buttons — "Connect" in green
   (`#66C468`), "Scan again" in blue (`#3F88F2`), the chosen network in blue with a checkmark,
-  system font.
+  system font; the device name and "Wi-Fi setup" on separate lines in the title.
 
 ### Removed
 - `CONFIG_CAPTIVE_WIFI_PORTAL_TIMEOUT_MIN` — replaced by the background attempts above. With the old

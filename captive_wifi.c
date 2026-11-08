@@ -320,7 +320,8 @@ static const char PAGE[] =
 "else if(j.state=='failed')st.textContent='Not connected: '+j.msg;"
 "}).catch(()=>{st.textContent='Connecting... (the phone may drop this network for a moment)';"
 "setTimeout(poll,2000)})}"
-"fetch('/status').then(r=>r.json()).then(j=>{dev.textContent=j.device+' Wi-Fi setup'});scan()"
+"fetch('/status').then(r=>r.json()).then(j=>{dev.textContent=j.device;"
+"dev.append(document.createElement('br'),'Wi-Fi setup')});scan()"
 "</script></body></html>";
 
 static void json_str(char *out, size_t len, const char *s)
