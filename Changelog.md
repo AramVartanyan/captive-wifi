@@ -8,9 +8,21 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - Portal: a network chosen on the page while a background attempt of the stored network was
-  running got `esp_wifi_connect()` refused by the driver ("sta is connecting") right after
-  `esp_wifi_disconnect()`; it only worked because the new config was picked up by chance. The
-  attempt is now started by the worker task a moment later (retried every 0.5 s until accepted).
+  running — `esp_wifi_connect()` right after `esp_wifi_disconnect()` was refused by the driver
+  (`E wifi: sta is connecting`). On hardware the driver goes on by itself with the new config
+  (auth ~90 ms after the click), so no call is made at that moment any more. As a safety net,
+  if within 5 s there is neither an association nor a failed attempt, the worker task starts the
+  attempt once. (An intermediate version retried every 0.5 s; on hardware that only produced
+  errors and, once connected, a "sta is connected, disconnect before connecting" warning.)
+- Portal: choosing another network within the 10 s after a successful connection no longer lets
+  the pending portal stop cut the new attempt short.
+- Portal: `esp_wifi_set_config()` right after `esp_wifi_disconnect()` can fail with
+  `ESP_ERR_WIFI_STATE` (the disconnect is asynchronous; the driver behaviour differs between
+  ESP-IDF versions). The result was ignored, so the interrupted attempt could go on with the old
+  (stored) network and its credentials were then saved under the page's network. Now a refused
+  config is set again by the worker task as soon as the driver accepts it, before the attempt is
+  started; events of the interrupted attempt do not count as tries of the page's network; and a
+  connection to a different SSID than the chosen one is dropped and the chosen one is used.
 
 ### Added
 - `README.md` — credits to the original project (tonyp7/esp32-wifi-manager by Tony Pottier) and

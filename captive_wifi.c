@@ -29,6 +29,7 @@ static const char *TAG = "captive_wifi";
 #define CONNECT_TIMEOUT_MS  30000   /* portal: give up on a connection attempt */
 #define CONNECT_TRIES       3       /* portal: disconnects before giving up */
 #define STOP_DELAY_MS       10000   /* portal: keep the page up after success */
+#define KICK_DELAY_MS       5000    /* portal: safety-net connect if the driver did not go on by itself */
 #define WORKER_PERIOD_MS    500
 #define RETRY_BURST         CONFIG_CAPTIVE_WIFI_RETRY_BURST
 #define RETRY_PAUSE         pdMS_TO_TICKS(CONFIG_CAPTIVE_WIFI_RETRY_PAUSE_S * 1000)
@@ -62,7 +63,8 @@ static volatile bool s_wifi_started;
 static int  s_fail_count;
 static volatile TickType_t s_retry_at; /* 0 = no retry pending; else next attempt of the stored network */
 static volatile bool s_bg_try;         /* portal: background attempt of the stored network */
-static volatile bool s_try_kick;       /* portal: the page's attempt still has to call esp_wifi_connect() */
+static volatile TickType_t s_try_kick_at; /* portal: safety-net esp_wifi_connect() for the page's attempt, 0 = none */
+static volatile bool s_try_cfg_pending;   /* portal: the page's network is not set in the driver yet */
 
 /* portal connection attempt, shown on the page through /status */
 static volatile try_state_t s_try;
@@ -154,7 +156,9 @@ esp_err_t captive_wifi_clear_credentials(void)
     return err;
 }
 
-static void sta_set_config(const char *ssid, const char *pass)
+/* Can fail with ESP_ERR_WIFI_STATE while the driver is still connecting (esp_wifi_disconnect()
+ * is asynchronous); the station then keeps its previous config. */
+static esp_err_t sta_set_config(const char *ssid, const char *pass)
 {
     wifi_config_t cfg = {0};
     strlcpy((char *)cfg.sta.ssid, ssid, sizeof(cfg.sta.ssid));
@@ -162,7 +166,7 @@ static void sta_set_config(const char *ssid, const char *pass)
     cfg.sta.threshold.authmode = pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
     cfg.sta.pmf_cfg.capable = true;
     cfg.sta.pmf_cfg.required = false;
-    esp_wifi_set_config(WIFI_IF_STA, &cfg);
+    return esp_wifi_set_config(WIFI_IF_STA, &cfg);
 }
 
 /* -------------------------------------------------------------------- DNS */
@@ -474,6 +478,7 @@ static esp_err_t connect_post(httpd_req_t *req)
     s_try_disconnects = 0;
     s_try_reason = 0;
     s_try_started = xTaskGetTickCount();
+    s_stop_at = 0;                          /* a second network chosen within the 10 s after a success */
     s_try = TRY_CONNECTING;
     ESP_LOGI(TAG, "portal: connecting to %s", s_try_ssid);
 
@@ -483,10 +488,25 @@ static esp_err_t connect_post(httpd_req_t *req)
         s_bg_try = false;                   /* the page's network takes over */
         esp_wifi_disconnect();
     }
-    sta_set_config(s_try_ssid, s_try_pass);
-    /* Right after esp_wifi_disconnect() the driver may still be connecting and refuses a new
-     * esp_wifi_connect() ("sta is connecting"); the worker starts the attempt a moment later. */
-    s_try_kick = busy || esp_wifi_connect() != ESP_OK;
+    if (sta_set_config(s_try_ssid, s_try_pass) != ESP_OK) {
+        /* driver still busy with the interrupted attempt: the worker sets the page's network
+         * as soon as the driver accepts it, then starts the attempt */
+        s_try_cfg_pending = true;
+        s_try_kick_at = 0;
+        return ESP_OK;
+    }
+    s_try_cfg_pending = false;
+    /* An attempt interrupted by esp_wifi_disconnect() is not finished at once: the driver
+     * goes on by itself with the new config (seen on hardware: auth 90 ms later) and refuses
+     * an esp_wifi_connect() meanwhile ("sta is connecting"). So no call now; only if nothing
+     * at all happened within KICK_DELAY_MS (no association, no failed attempt) does the
+     * worker start the attempt itself. */
+    if (busy || esp_wifi_connect() != ESP_OK) {
+        TickType_t t = xTaskGetTickCount() + pdMS_TO_TICKS(KICK_DELAY_MS);
+        s_try_kick_at = t ? t : 1;
+    } else {
+        s_try_kick_at = 0;
+    }
     return ESP_OK;
 }
 
@@ -668,12 +688,23 @@ static void worker_task(void *arg)
             }
             continue;
         }
-        if (s_try == TRY_CONNECTING && s_try_kick) {
-            if (esp_wifi_connect() == ESP_OK) {
-                s_try_kick = false;
+        if (s_try_cfg_pending) {
+            if (s_try != TRY_CONNECTING) {
+                s_try_cfg_pending = false;
+            } else if (sta_set_config(s_try_ssid, s_try_pass) == ESP_OK) {
+                s_try_cfg_pending = false;
+                s_try_kick_at = 0;
+                ESP_LOGI(TAG, "portal: starting the attempt to %s", s_try_ssid);
+                esp_wifi_connect();
             }
-        } else if (s_try != TRY_CONNECTING) {
-            s_try_kick = false;
+        }
+        TickType_t kick_at = s_try_kick_at;
+        if (kick_at && (int32_t)(now - kick_at) >= 0) {
+            s_try_kick_at = 0;              /* one call only */
+            if (s_try == TRY_CONNECTING) {
+                ESP_LOGI(TAG, "portal: starting the attempt to %s", s_try_ssid);
+                esp_wifi_connect();
+            }
         }
         if (s_try == TRY_CONNECTING &&
             now - s_try_started > pdMS_TO_TICKS(CONNECT_TIMEOUT_MS)) {
@@ -720,6 +751,9 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
             esp_wifi_connect();
         }
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
+        if (!s_try_cfg_pending) {
+            s_try_kick_at = 0;              /* the station associated: nothing left to start */
+        }
         esp_netif_create_ip6_linklocal(s_sta_netif);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
@@ -729,6 +763,16 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
         s_fail_count = 0;
         s_retry_at = 0;
         if (s_portal) {
+            wifi_ap_record_t ap;
+            if (s_try == TRY_CONNECTING && esp_wifi_sta_get_ap_info(&ap) == ESP_OK &&
+                strncmp((char *)ap.ssid, s_try_ssid, sizeof(ap.ssid)) != 0) {
+                /* the interrupted attempt (old config) connected: the page's choice wins */
+                ESP_LOGW(TAG, "portal: connected to %s instead of %s, switching", (char *)ap.ssid,
+                         s_try_ssid);
+                s_try_cfg_pending = true;   /* the worker sets the page's network, then connects */
+                esp_wifi_disconnect();
+                return;
+            }
             if (s_try == TRY_CONNECTING) {
                 if (creds_save(s_try_ssid, s_try_pass) != ESP_OK) {
                     ESP_LOGE(TAG, "credentials not saved");
@@ -758,7 +802,10 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
         }
         if (s_portal) {
             /* the attempt started from the page is retried a few times */
-            if (s_try == TRY_CONNECTING && e->reason != WIFI_REASON_ASSOC_LEAVE) {
+            if (s_try == TRY_CONNECTING && s_try_cfg_pending) {
+                /* end of the interrupted attempt (old config): not a try of the page's network */
+            } else if (s_try == TRY_CONNECTING && e->reason != WIFI_REASON_ASSOC_LEAVE) {
+                s_try_kick_at = 0;          /* an attempt ran and failed: retried right here */
                 s_try_reason = e->reason;
                 if (++s_try_disconnects >= CONNECT_TRIES) {
                     ESP_LOGW(TAG, "portal: %s failed, reason %d", s_try_ssid, e->reason);
