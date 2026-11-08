@@ -11,17 +11,11 @@
 #include "esp_netif.h"
 #include "esp_mac.h"
 #include "esp_http_server.h"
-#include "nvs_flash.h"
-#include "nvs.h"
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
 #include "captive_wifi.h"
 
 static const char *TAG = "captive_wifi";
-
-#define NS          "cwifi"
-#define KEY_SSID    "ssid"
-#define KEY_PASS    "pass"
 
 #define PORTAL_URI          "http://192.168.4.1/"
 #define AP_MAX_CLIENTS      4
@@ -65,6 +59,9 @@ static volatile TickType_t s_retry_at; /* 0 = no retry pending; else next attemp
 static volatile bool s_bg_try;         /* portal: background attempt of the stored network */
 static volatile TickType_t s_try_kick_at; /* portal: safety-net esp_wifi_connect() for the page's attempt, 0 = none */
 static volatile bool s_try_cfg_pending;   /* portal: the page's network is not set in the driver yet */
+static wifi_config_t s_saved;             /* the stored network (kept by the driver in NVS), RAM copy */
+static bool s_saved_loaded;               /* s_saved read from the driver (captive_wifi_start()) */
+static volatile bool s_restore_pending;   /* portal: the page's network failed, s_saved goes back */
 
 /* portal connection attempt, shown on the page through /status */
 static volatile try_state_t s_try;
@@ -95,69 +92,33 @@ static TickType_t retry_tick(void)
 
 /* ------------------------------------------------------------ credentials */
 
-static esp_err_t creds_load(wifi_config_t *cfg)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NS, NVS_READONLY, &h);
-    if (err != ESP_OK) {
-        return err;
-    }
-    size_t l1 = sizeof(cfg->sta.ssid), l2 = sizeof(cfg->sta.password);
-    err = nvs_get_str(h, KEY_SSID, (char *)cfg->sta.ssid, &l1);
-    if (err == ESP_OK) {
-        err = nvs_get_str(h, KEY_PASS, (char *)cfg->sta.password, &l2);
-        if (err == ESP_ERR_NVS_NOT_FOUND) {      /* open network */
-            cfg->sta.password[0] = 0;
-            err = ESP_OK;
-        }
-    }
-    nvs_close(h);
-    return err;
-}
-
-static esp_err_t creds_save(const char *ssid, const char *pass)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = nvs_set_str(h, KEY_SSID, ssid);
-    if (err == ESP_OK) {
-        err = pass[0] ? nvs_set_str(h, KEY_PASS, pass) : nvs_erase_key(h, KEY_PASS);
-        if (err == ESP_ERR_NVS_NOT_FOUND) {
-            err = ESP_OK;
-        }
-    }
-    if (err == ESP_OK) {
-        err = nvs_commit(h);
-    }
-    nvs_close(h);
-    return err;
-}
+/* The network is kept where ESP-IDF itself keeps it: the station config of the Wi-Fi driver,
+ * stored in NVS (WIFI_STORAGE_FLASH, the default). So "is a network stored" means the same
+ * here as for any other code that reads esp_wifi_get_config(), and esp_wifi_restore() clears
+ * it for everyone. */
 
 bool captive_wifi_has_credentials(void)
 {
+    if (s_saved_loaded) {
+        return s_saved.sta.ssid[0] != 0;
+    }
     wifi_config_t cfg = {0};
-    return creds_load(&cfg) == ESP_OK && cfg.sta.ssid[0] != 0;
+    return esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK && cfg.sta.ssid[0] != 0;
 }
 
 esp_err_t captive_wifi_clear_credentials(void)
 {
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
-    if (err != ESP_OK) {
-        return err;
-    }
-    nvs_erase_all(h);
-    err = nvs_commit(h);
-    nvs_close(h);
+    /* station config (and mode) back to the defaults, in NVS too */
+    esp_err_t err = esp_wifi_restore();
+    memset(&s_saved, 0, sizeof(s_saved));
+    s_restore_pending = false;
     ESP_LOGI(TAG, "credentials cleared");
     return err;
 }
 
-/* Can fail with ESP_ERR_WIFI_STATE while the driver is still connecting (esp_wifi_disconnect()
- * is asynchronous); the station then keeps its previous config. */
+/* Sets and stores (NVS) the station config. Can fail with ESP_ERR_WIFI_STATE while the driver
+ * is still connecting (esp_wifi_disconnect() is asynchronous); the station then keeps its
+ * previous config. */
 static esp_err_t sta_set_config(const char *ssid, const char *pass)
 {
     wifi_config_t cfg = {0};
@@ -293,7 +254,7 @@ static const char PAGE[] =
 "border-radius:999px;color:#fff;background:var(--green);font-family:inherit}"
 "button.sec{background:var(--blue)}button:active{opacity:.7}"
 "label{display:flex;align-items:center;gap:8px;margin:0 6px 14px;color:var(--sub);font-size:15px}"
-"#st{margin:12px 6px;font-weight:600;text-align:center}"
+"#st{margin:12px 6px;font-weight:600;text-align:center}#st.err{color:#FF3B30}"
 "</style></head><body>"
 "<h1 id='dev'>Wi-Fi setup</h1><p>Choose the network for this device.</p>"
 "<button class='sec' onclick='scan()'>Scan again</button>"
@@ -314,7 +275,7 @@ static const char PAGE[] =
 "d.onclick=()=>{document.querySelectorAll('#list div').forEach(x=>x.className='');"
 "d.className='sel';ssid.value=n.ssid;pass.focus()};list.appendChild(d)})})"
 ".catch(()=>msg('Scan failed'))}"
-"function conn(){if(!ssid.value){st.textContent='Choose a network';return}"
+"function conn(){st.className='';if(!ssid.value){st.textContent='Choose a network';return}"
 "st.textContent='Connecting...';let b='ssid='+encodeURIComponent(ssid.value)+"
 "'&pass='+encodeURIComponent(pass.value);"
 "fetch('/connect',{method:'POST',body:b}).then(r=>r.json()).then(j=>{"
@@ -322,7 +283,7 @@ static const char PAGE[] =
 "function poll(){fetch('/status').then(r=>r.json()).then(j=>{"
 "if(j.state=='connecting'){st.textContent='Connecting...';setTimeout(poll,1500)}"
 "else if(j.state=='ok')st.textContent='Connected, IP '+j.ip+'. The device leaves setup mode now.';"
-"else if(j.state=='failed')st.textContent='Not connected: '+j.msg;"
+"else if(j.state=='failed'){st.className='err';st.textContent=j.msg}"
 "}).catch(()=>{st.textContent='Connecting... (the phone may drop this network for a moment)';"
 "setTimeout(poll,2000)})}"
 "fetch('/status').then(r=>r.json()).then(j=>{dev.textContent=j.device;"
@@ -363,21 +324,33 @@ static void url_decode(char *s)
     *o = 0;
 }
 
+/* Text for the page and the log; NULL = no specific text (the page shows the reason code).
+ * WPA2 has no "wrong password" message: the access point just drops the 4-way handshake.
+ * Depending on the access point the driver reports 15, 202, 204 or, after trying several
+ * access points of the same network (mesh), 205 (seen on hardware, ESP-IDF 5.5.4). */
 static const char *reason_text(int reason)
 {
     switch (reason) {
-    case WIFI_REASON_NO_AP_FOUND:
-        return "network not found";
-    case WIFI_REASON_AUTH_FAIL:
     case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_AUTH_FAIL:
     case WIFI_REASON_HANDSHAKE_TIMEOUT:
-        return "wrong password?";
+    case WIFI_REASON_CONNECTION_FAIL:
+        return "Wrong password. Check it and try again.";
+    case WIFI_REASON_NO_AP_FOUND:
+        return "Network not found. Check the name or move the device closer to the router.";
+    case WIFI_REASON_BEACON_TIMEOUT:
+    case WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD:
+        return "The signal is too weak. Move the device closer to the router.";
     case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
-        return "unsupported security";
+    case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+        return "The security type of this network is not supported.";
+    case WIFI_REASON_ASSOC_TOOMANY:
+    case WIFI_REASON_ASSOC_FAIL:
+        return "The router refused the connection (too many devices?).";
     case 0:
-        return "no answer from the network";
+        return "No answer from the network.";
     default:
-        return "connection failed";
+        return NULL;
     }
 }
 
@@ -477,6 +450,7 @@ static esp_err_t connect_post(httpd_req_t *req)
     strlcpy(s_try_pass, pass, sizeof(s_try_pass));
     s_try_disconnects = 0;
     s_try_reason = 0;
+    s_restore_pending = false;              /* this attempt sets its own network */
     s_try_started = xTaskGetTickCount();
     s_stop_at = 0;                          /* a second network chosen within the 10 s after a success */
     s_try = TRY_CONNECTING;
@@ -512,7 +486,7 @@ static esp_err_t connect_post(httpd_req_t *req)
 
 static esp_err_t status_get(httpd_req_t *req)
 {
-    char dev[80], json[200];
+    char dev[80], msg[96], json[280];
     json_str(dev, sizeof(dev), s_ap_ssid);
     switch (s_try) {
     case TRY_CONNECTING:
@@ -524,10 +498,18 @@ static esp_err_t status_get(httpd_req_t *req)
         snprintf(json, sizeof(json), "{\"device\":\"%s\",\"state\":\"ok\",\"ip\":\"%s\"}", dev, ip);
         break;
     }
-    case TRY_FAILED:
+    case TRY_FAILED: {
+        int reason = s_try_reason;
+        const char *t = reason_text(reason);
+        if (t) {
+            strlcpy(msg, t, sizeof(msg));
+        } else {
+            snprintf(msg, sizeof(msg), "Not connected (reason %d). Try again.", reason);
+        }
         snprintf(json, sizeof(json), "{\"device\":\"%s\",\"state\":\"failed\",\"msg\":\"%s\"}",
-                 dev, reason_text(s_try_reason));
+                 dev, msg);
         break;
+    }
     default:
         snprintf(json, sizeof(json), "{\"device\":\"%s\",\"state\":\"idle\"}", dev);
         break;
@@ -710,8 +692,19 @@ static void worker_task(void *arg)
             now - s_try_started > pdMS_TO_TICKS(CONNECT_TIMEOUT_MS)) {
             ESP_LOGW(TAG, "portal: no connection to %s", s_try_ssid);
             esp_wifi_disconnect();
+            s_restore_pending = true;
             s_try = TRY_FAILED;
             emit(CAPTIVE_WIFI_EVT_PORTAL_CONNECT_FAILED);
+        }
+        /* the page's network did not connect: the stored network goes back into the driver
+         * (and NVS); retried each period while the driver still refuses it */
+        if (s_restore_pending && s_try != TRY_CONNECTING) {
+            if (esp_wifi_set_config(WIFI_IF_STA, &s_saved) == ESP_OK) {
+                s_restore_pending = false;
+                if (s_saved.sta.ssid[0]) {
+                    ESP_LOGI(TAG, "portal: the stored network %s is kept", (char *)s_saved.sta.ssid);
+                }
+            }
         }
         if (s_stop_at && (int32_t)(now - s_stop_at) >= 0) {
             portal_stop();
@@ -719,17 +712,14 @@ static void worker_task(void *arg)
         }
         /* portal open: the stored network is never given up, one attempt per pause.
          * Not while the page's own attempt runs or a successful one is closing. */
-        if (retry_due && s_try != TRY_CONNECTING && s_try != TRY_OK && !s_bg_try) {
-            wifi_config_t cfg = {0};
-            if (creds_load(&cfg) == ESP_OK && cfg.sta.ssid[0]) {
-                ESP_LOGI(TAG, "portal: trying the stored network %s", cfg.sta.ssid);
-                s_retry_at = 0;
+        if (retry_due && s_try != TRY_CONNECTING && s_try != TRY_OK && !s_bg_try &&
+            !s_restore_pending) {
+            s_retry_at = 0;
+            if (s_saved.sta.ssid[0]) {      /* the driver holds it (put back after a failed page attempt) */
+                ESP_LOGI(TAG, "portal: trying the stored network %s", (char *)s_saved.sta.ssid);
                 s_bg_try = true;
-                sta_set_config((char *)cfg.sta.ssid, (char *)cfg.sta.password);
                 esp_wifi_connect();
-            } else {
-                s_retry_at = 0;             /* nothing stored any more */
-            }
+            }                               /* else nothing stored any more */
         }
     }
 }
@@ -774,9 +764,8 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
                 return;
             }
             if (s_try == TRY_CONNECTING) {
-                if (creds_save(s_try_ssid, s_try_pass) != ESP_OK) {
-                    ESP_LOGE(TAG, "credentials not saved");
-                }
+                /* the page's network, already stored by sta_set_config(), is now the stored one */
+                esp_wifi_get_config(WIFI_IF_STA, &s_saved);
                 s_try = TRY_OK;
                 s_stop_at = xTaskGetTickCount() + pdMS_TO_TICKS(STOP_DELAY_MS);
             } else if (s_bg_try) {
@@ -808,7 +797,10 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
                 s_try_kick_at = 0;          /* an attempt ran and failed: retried right here */
                 s_try_reason = e->reason;
                 if (++s_try_disconnects >= CONNECT_TRIES) {
-                    ESP_LOGW(TAG, "portal: %s failed, reason %d", s_try_ssid, e->reason);
+                    const char *t = reason_text(e->reason);
+                    ESP_LOGW(TAG, "portal: %s failed, reason %d%s%s%s", s_try_ssid, e->reason,
+                             t ? " (" : "", t ? t : "", t ? ")" : "");
+                    s_restore_pending = true;
                     s_try = TRY_FAILED;
                     emit(CAPTIVE_WIFI_EVT_PORTAL_CONNECT_FAILED);
                 } else {
@@ -873,7 +865,7 @@ esp_err_t captive_wifi_init(const char *hostname, captive_wifi_cb_t cb, void *ct
     if (err != ESP_OK) {
         return err;
     }
-    esp_wifi_set_storage(WIFI_STORAGE_RAM);  /* credentials live in our own NVS keys */
+    esp_wifi_set_storage(WIFI_STORAGE_FLASH);  /* the default: the driver keeps the network in NVS */
 
     s_cmd = xQueueCreate(4, sizeof(cmd_t));
     if (!s_cmd || xTaskCreate(worker_task, "cwifi", 4096, NULL, 3, NULL) != pdPASS) {
@@ -884,18 +876,20 @@ esp_err_t captive_wifi_init(const char *hostname, captive_wifi_cb_t cb, void *ct
 
 esp_err_t captive_wifi_start(void)
 {
-    wifi_config_t cfg = {0};
     s_fail_count = 0;
     s_retry_at = 0;
     s_ever_connected = false;
-    if (creds_load(&cfg) != ESP_OK || cfg.sta.ssid[0] == 0) {
+    s_restore_pending = false;
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    memset(&s_saved, 0, sizeof(s_saved));
+    esp_wifi_get_config(WIFI_IF_STA, &s_saved);
+    s_saved_loaded = true;
+    if (s_saved.sta.ssid[0] == 0) {
         ESP_LOGI(TAG, "no stored network");
         post(CMD_PORTAL_START);
         return ESP_OK;
     }
-    ESP_LOGI(TAG, "connecting to %s", cfg.sta.ssid);
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    sta_set_config((char *)cfg.sta.ssid, (char *)cfg.sta.password);
+    ESP_LOGI(TAG, "connecting to %s", (char *)s_saved.sta.ssid);
     esp_err_t err = esp_wifi_start();
     s_wifi_started = (err == ESP_OK);
     return err;

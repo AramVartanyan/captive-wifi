@@ -18,7 +18,9 @@ ESP32-S2 (ESP-IDF 5.5.4) in [mppt-1k](https://github.com/AramVartanyan/mppt-1k).
 
 ## Features
 
-- Credentials stored in NVS (namespace `cwifi`); STA with automatic reconnect.
+- The network is kept where ESP-IDF keeps it: the station config of the Wi-Fi driver, stored in NVS
+  (`WIFI_STORAGE_FLASH`, the default). Any code that reads `esp_wifi_get_config()` sees the same
+  network, and `esp_wifi_restore()` clears it. STA with automatic reconnect.
 - **The stored network is never given up**: failed attempts come in bursts with a pause in between
   (default 5 attempts, then 1 min), so the device reconnects by itself as soon as the router is back
   (e.g. after a power cut, when the router starts slower than the device).
@@ -26,16 +28,18 @@ ESP32-S2 (ESP-IDF 5.5.4) in [mppt-1k](https://github.com/AramVartanyan/mppt-1k).
   - DNS server answering every name with `192.168.4.1`;
   - DHCP option 114 (captive-portal URI) — the sign-in page opens by itself on iOS, Android and Windows;
   - web page: scanned networks with signal strength, password field, connect button, status.
-- The chosen network is tried **while the portal stays up**; credentials are saved **only after
-  the network gives an IP**, so a typo never replaces a working network.
+- The chosen network is tried **while the portal stays up**; if it does not connect, the previously
+  stored network is put back, so a typo never replaces a working network.
 - After a successful connection the portal stops (10 s later) and the device stays in STA — **no reboot**.
 - Event callback for the application (LED, display, starting HomeKit, ...).
-- No dependencies beyond ESP-IDF components: `esp_wifi`, `esp_netif`, `esp_event`, `nvs_flash`,
+- No dependencies beyond ESP-IDF components: `esp_wifi`, `esp_netif`, `esp_event`,
   `esp_http_server`, `lwip`.
+  The application calls `nvs_flash_init()` before `captive_wifi_init()` (the driver keeps the network
+  in NVS).
 
 ## Behaviour
 
-1. `captive_wifi_start()`: credentials in NVS → STA, connect. Failed attempts come in bursts of
+1. `captive_wifi_start()`: a stored network → STA, connect. Failed attempts come in bursts of
    `CONFIG_CAPTIVE_WIFI_RETRY_BURST`, with `CONFIG_CAPTIVE_WIFI_RETRY_PAUSE_S` between bursts — forever.
 2. No credentials, or `CONFIG_CAPTIVE_WIFI_MAX_RETRIES` failed attempts without ever connecting since
    boot → SoftAP `<prefix>-xxxxxx` (prefix from Kconfig, last 3 bytes of the MAC),
@@ -48,9 +52,10 @@ ESP32-S2 (ESP-IDF 5.5.4) in [mppt-1k](https://github.com/AramVartanyan/mppt-1k).
 3. Portal endpoints: `/` (page), `/scan`, `/connect`, `/status`; any other URL redirects to the page.
 4. The device tries the chosen network; the page polls `/status`. A failed attempt (3 disconnects
    or 30 s) is reported on the page and with `CAPTIVE_WIFI_EVT_PORTAL_CONNECT_FAILED`.
-5. On success: credentials saved, `CAPTIVE_WIFI_EVT_PORTAL_STOPPED` is sent **before**
+5. On success the chosen network stays stored; `CAPTIVE_WIFI_EVT_PORTAL_STOPPED` is sent **before**
    `CAPTIVE_WIFI_EVT_STA_CONNECTED`, so nothing started on the connection meets the portal's web server.
-6. `captive_wifi_clear_credentials()` + `captive_wifi_start()` → back to the portal (e.g. "Reset Wi-Fi").
+6. `captive_wifi_clear_credentials()` (`esp_wifi_restore()`) + `captive_wifi_start()` → back to the
+   portal (e.g. "Reset Wi-Fi"); the same happens after any other code calls `esp_wifi_restore()`.
 
 ## API
 

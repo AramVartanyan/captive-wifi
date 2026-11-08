@@ -2,7 +2,7 @@
  * captive-wifi — Wi-Fi station management with captive-portal fallback for
  * ESP-IDF 5.x. Created by Aram Vartanyan, (C) 2026. MIT licence.
  *
- * Boot: credentials in NVS → STA with reconnect; none, or too many failed
+ * Boot: a network stored by the Wi-Fi driver (NVS) → STA with reconnect; none, or too many failed
  * attempts → open SoftAP with a captive portal (DNS catch-all + DHCP option
  * 114) serving a page that scans networks and stores the chosen credentials.
  * Follows the idea of tonyp7/esp32-wifi-manager; structure from the ESP-IDF
@@ -40,7 +40,7 @@ esp_err_t captive_wifi_start(void);
 esp_err_t captive_wifi_stop(void);
 
 bool        captive_wifi_has_credentials(void);
-esp_err_t   captive_wifi_clear_credentials(void);   /* next start → portal */
+esp_err_t   captive_wifi_clear_credentials(void);   /* esp_wifi_restore(); next start → portal */
 bool        captive_wifi_is_connected(void);
 bool        captive_wifi_portal_active(void);
 const char *captive_wifi_ap_ssid(void);             /* "<prefix>-xxxxxx" */
