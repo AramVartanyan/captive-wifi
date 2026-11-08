@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-#define CAPTIVE_WIFI_VERSION "0.2.1"
+#define CAPTIVE_WIFI_VERSION "0.2.2"
 
 typedef enum {
     CAPTIVE_WIFI_EVT_STA_CONNECTED = 0,   /* got IP */
