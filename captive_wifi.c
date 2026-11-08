@@ -484,8 +484,11 @@ static esp_err_t connect_post(httpd_req_t *req)
         esp_wifi_disconnect();
     }
     sta_set_config(s_try_ssid, s_try_pass);
-    /* Right after esp_wifi_disconnect() the driver may still be connecting and refuses a new
-     * esp_wifi_connect() ("sta is connecting"); the worker starts the attempt a moment later. */
+    /* Right after esp_wifi_disconnect() the driver is often still busy: it refuses a new
+     * esp_wifi_connect() ("sta is connecting") and usually goes on with the new config by
+     * itself. The worker makes one esp_wifi_connect() 0.5 s later, unless the station has
+     * already associated; a refused call means an attempt is running and its result arrives
+     * as a disconnect (retried below) or got-IP event. */
     s_try_kick = busy || esp_wifi_connect() != ESP_OK;
     return ESP_OK;
 }
@@ -668,12 +671,11 @@ static void worker_task(void *arg)
             }
             continue;
         }
-        if (s_try == TRY_CONNECTING && s_try_kick) {
-            if (esp_wifi_connect() == ESP_OK) {
-                s_try_kick = false;
+        if (s_try_kick) {
+            s_try_kick = false;             /* one call: never against a running attempt again */
+            if (s_try == TRY_CONNECTING) {
+                esp_wifi_connect();
             }
-        } else if (s_try != TRY_CONNECTING) {
-            s_try_kick = false;
         }
         if (s_try == TRY_CONNECTING &&
             now - s_try_started > pdMS_TO_TICKS(CONNECT_TIMEOUT_MS)) {
@@ -720,6 +722,7 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
             esp_wifi_connect();
         }
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
+        s_try_kick = false;                 /* the station associated: nothing left to start */
         esp_netif_create_ip6_linklocal(s_sta_netif);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;

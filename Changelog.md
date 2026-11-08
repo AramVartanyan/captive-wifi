@@ -10,7 +10,10 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Portal: a network chosen on the page while a background attempt of the stored network was
   running got `esp_wifi_connect()` refused by the driver ("sta is connecting") right after
   `esp_wifi_disconnect()`; it only worked because the new config was picked up by chance. The
-  attempt is now started by the worker task a moment later (retried every 0.5 s until accepted).
+  worker task now makes one `esp_wifi_connect()` 0.5 s later, unless the station has associated
+  meanwhile. (The first version of this fix retried every 0.5 s; on hardware the driver went on
+  with the new config by itself, so the retries only produced errors and, once connected, a
+  "sta is connected, disconnect before connecting" warning.)
 
 ### Added
 - `README.md` — credits to the original project (tonyp7/esp32-wifi-manager by Tony Pottier) and
