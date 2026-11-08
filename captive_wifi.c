@@ -30,6 +30,8 @@ static const char *TAG = "captive_wifi";
 #define CONNECT_TRIES       3       /* portal: disconnects before giving up */
 #define STOP_DELAY_MS       10000   /* portal: keep the page up after success */
 #define WORKER_PERIOD_MS    500
+#define RETRY_BURST         CONFIG_CAPTIVE_WIFI_RETRY_BURST
+#define RETRY_PAUSE         pdMS_TO_TICKS(CONFIG_CAPTIVE_WIFI_RETRY_PAUSE_S * 1000)
 
 /* ------------------------------------------------------------------ state */
 
@@ -58,6 +60,8 @@ static volatile bool s_ever_connected; /* since captive_wifi_start() */
 static volatile bool s_portal;
 static volatile bool s_wifi_started;
 static int  s_fail_count;
+static volatile TickType_t s_retry_at; /* 0 = no retry pending; else next attempt of the stored network */
+static volatile bool s_bg_try;         /* portal: background attempt of the stored network */
 
 /* portal connection attempt, shown on the page through /status */
 static volatile try_state_t s_try;
@@ -65,7 +69,6 @@ static volatile int s_try_disconnects;
 static volatile int s_try_reason;
 static TickType_t s_try_started;
 static TickType_t s_stop_at;           /* 0 = no stop pending */
-static TickType_t s_portal_started;
 static char s_try_ssid[33];
 static char s_try_pass[65];
 
@@ -78,6 +81,13 @@ static void emit(captive_wifi_event_t evt)
     if (s_cb) {
         s_cb(evt, s_cb_ctx);
     }
+}
+
+/* tick of the next retry, never 0 (0 means "none pending") */
+static TickType_t retry_tick(void)
+{
+    TickType_t t = xTaskGetTickCount() + RETRY_PAUSE;
+    return t ? t : 1;
 }
 
 /* ------------------------------------------------------------ credentials */
@@ -260,31 +270,45 @@ static const char PAGE[] =
 "<!DOCTYPE html><html><head><meta charset='utf-8'>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
 "<title>Wi-Fi setup</title><style>"
-"body{font-family:sans-serif;margin:0;padding:16px;max-width:420px;background:#f4f4f4;color:#222}"
-"h1{font-size:20px;margin:0 0 4px}p{margin:4px 0 12px;color:#555}"
-"#list div{background:#fff;padding:12px;margin:6px 0;border-radius:6px;cursor:pointer;"
-"display:flex;justify-content:space-between}#list div.sel{outline:2px solid #2a7}"
-"input,button{width:100%;box-sizing:border-box;font-size:16px;padding:10px;margin:6px 0;"
-"border-radius:6px;border:1px solid #bbb}button{background:#2a7;color:#fff;border:0}"
-"button.sec{background:#888}#st{margin-top:12px;font-weight:bold}"
+/* iOS Settings look: grouped background, white inset groups, system green/blue */
+":root{--bg:#F2F1F6;--card:#fff;--txt:#000;--sub:#6D6D72;--sep:#C6C6C8;--green:#66C468;--blue:#3F88F2}"
+"body{font-family:-apple-system,system-ui,'Segoe UI',Roboto,sans-serif;margin:0 auto;padding:20px 16px;"
+"max-width:440px;background:var(--bg);color:var(--txt);-webkit-text-size-adjust:100%}"
+"h1{font-size:28px;font-weight:700;margin:4px 4px 4px}p{margin:0 4px 18px;color:var(--sub);font-size:16px}"
+".grp{background:var(--card);border-radius:24px;overflow:hidden;margin:10px 0 18px}"
+"#list div,.grp input{display:flex;justify-content:space-between;align-items:center;font-size:17px;"
+"padding:14px 18px;min-height:24px;box-sizing:border-box;width:100%;position:relative;cursor:pointer}"
+"#list div+div:before{border-top:0.5px solid var(--sep)}"
+".grp input+input{background:linear-gradient(var(--sep),var(--sep)) 18px 0/100% 0.5px no-repeat}"
+"#list div+div:before{content:'';position:absolute;top:0;left:18px;right:0}"
+"#list div.sel{color:var(--blue)}#list div.sel .b:after{content:' \\2713';font-weight:600;color:var(--blue)}"
+".b{color:var(--sub);font-size:15px;letter-spacing:-1px}#list .msg{color:var(--sub);cursor:default}"
+".grp input{border:0;border-radius:0;outline:0;background:transparent;display:block;font-family:inherit}"
+"button{width:100%;font-size:17px;font-weight:600;padding:15px;margin:6px 0;border:0;"
+"border-radius:999px;color:#fff;background:var(--green);font-family:inherit}"
+"button.sec{background:var(--blue)}button:active{opacity:.7}"
+"label{display:flex;align-items:center;gap:8px;margin:0 6px 14px;color:var(--sub);font-size:15px}"
+"#st{margin:12px 6px;font-weight:600;text-align:center}"
 "</style></head><body>"
 "<h1 id='dev'>Wi-Fi setup</h1><p>Choose the network for this device.</p>"
-"<button class='sec' onclick='scan()'>Scan again</button><div id='list'>Scanning...</div>"
-"<input id='ssid' placeholder='Network name' maxlength='32'>"
-"<input id='pass' type='password' placeholder='Password' maxlength='64'>"
+"<button class='sec' onclick='scan()'>Scan again</button>"
+"<div id='list' class='grp'><div class='msg'>Scanning...</div></div>"
+"<div class='grp'><input id='ssid' placeholder='Network name' maxlength='32'>"
+"<input id='pass' type='password' placeholder='Password' maxlength='64'></div>"
 "<label><input type='checkbox' style='width:auto' "
 "onclick=\"pass.type=this.checked?'text':'password'\"> show password</label>"
 "<button onclick='conn()'>Connect</button><div id='st'></div>"
 "<script>"
 "function esc(s){return s.replace(/[&<>\"']/g,c=>'&#'+c.charCodeAt(0)+';')}"
 "function bars(r){return r>-55?'||||':r>-67?'|||':r>-78?'||':'|'}"
-"function scan(){list.textContent='Scanning...';fetch('/scan').then(r=>r.json()).then(a=>{"
-"list.innerHTML='';if(!a.length)list.textContent='No networks found';"
+"function msg(t){list.innerHTML='<div class=msg>'+t+'</div>'}"
+"function scan(){msg('Scanning...');fetch('/scan').then(r=>r.json()).then(a=>{"
+"list.innerHTML='';if(!a.length)msg('No networks found');"
 "a.forEach(n=>{let d=document.createElement('div');"
-"d.innerHTML='<span>'+esc(n.ssid)+(n.auth?' &#128274;':'')+'</span><span>'+bars(n.rssi)+'</span>';"
+"d.innerHTML='<span>'+esc(n.ssid)+(n.auth?' &#128274;':'')+'</span><span class=b>'+bars(n.rssi)+'</span>';"
 "d.onclick=()=>{document.querySelectorAll('#list div').forEach(x=>x.className='');"
 "d.className='sel';ssid.value=n.ssid;pass.focus()};list.appendChild(d)})})"
-".catch(()=>list.textContent='Scan failed')}"
+".catch(()=>msg('Scan failed'))}"
 "function conn(){if(!ssid.value){st.textContent='Choose a network';return}"
 "st.textContent='Connecting...';let b='ssid='+encodeURIComponent(ssid.value)+"
 "'&pass='+encodeURIComponent(pass.value);"
@@ -296,7 +320,8 @@ static const char PAGE[] =
 "else if(j.state=='failed')st.textContent='Not connected: '+j.msg;"
 "}).catch(()=>{st.textContent='Connecting... (the phone may drop this network for a moment)';"
 "setTimeout(poll,2000)})}"
-"fetch('/status').then(r=>r.json()).then(j=>{dev.textContent=j.device+' Wi-Fi setup'});scan()"
+"fetch('/status').then(r=>r.json()).then(j=>{dev.textContent=j.device;"
+"dev.append(document.createElement('br'),'Wi-Fi setup')});scan()"
 "</script></body></html>";
 
 static void json_str(char *out, size_t len, const char *s)
@@ -361,7 +386,7 @@ static esp_err_t page_get(httpd_req_t *req)
 static esp_err_t scan_get(httpd_req_t *req)
 {
     wifi_scan_config_t sc = { .show_hidden = false };
-    if (s_try == TRY_CONNECTING || esp_wifi_scan_start(&sc, true) != ESP_OK) {
+    if (s_try == TRY_CONNECTING || s_bg_try || esp_wifi_scan_start(&sc, true) != ESP_OK) {
         httpd_resp_set_type(req, "application/json");
         return httpd_resp_sendstr(req, "[]");
     }
@@ -452,7 +477,8 @@ static esp_err_t connect_post(httpd_req_t *req)
     ESP_LOGI(TAG, "portal: connecting to %s", s_try_ssid);
 
     send_json(req, "{\"ok\":true}");        /* answer before the radio may change channel */
-    if (s_got_ip) {
+    if (s_got_ip || s_bg_try) {
+        s_bg_try = false;                   /* the page's network takes over */
         esp_wifi_disconnect();
     }
     sta_set_config(s_try_ssid, s_try_pass);
@@ -536,7 +562,9 @@ static void portal_start(void)
     s_portal = true;                        /* stops STA auto-reconnect */
     s_try = TRY_IDLE;
     s_stop_at = 0;
-    s_portal_started = xTaskGetTickCount();
+    s_bg_try = false;
+    /* keep trying the stored network in the background (APSTA), one attempt per pause */
+    s_retry_at = captive_wifi_has_credentials() ? retry_tick() : 0;
     if (s_wifi_started) {
         esp_wifi_disconnect();
     }
@@ -597,6 +625,10 @@ static void portal_stop(void)
     s_portal = false;
     s_try = TRY_IDLE;
     s_stop_at = 0;
+    s_bg_try = false;
+    if (s_got_ip) {
+        s_retry_at = 0;
+    }
     emit(CAPTIVE_WIFI_EVT_PORTAL_STOPPED);
     if (s_got_ip && !s_connected) {
         s_connected = true;
@@ -619,10 +651,19 @@ static void worker_task(void *arg)
             }
             continue;
         }
+        TickType_t now = xTaskGetTickCount();
+        TickType_t retry_at = s_retry_at;
+        bool retry_due = retry_at && s_wifi_started && (int32_t)(now - retry_at) >= 0;
+
         if (!s_portal) {
+            /* pause after a burst of failed attempts is over: next burst */
+            if (retry_due) {
+                s_retry_at = 0;
+                ESP_LOGI(TAG, "retrying the stored network");
+                esp_wifi_connect();
+            }
             continue;
         }
-        TickType_t now = xTaskGetTickCount();
         if (s_try == TRY_CONNECTING &&
             now - s_try_started > pdMS_TO_TICKS(CONNECT_TIMEOUT_MS)) {
             ESP_LOGW(TAG, "portal: no connection to %s", s_try_ssid);
@@ -634,20 +675,20 @@ static void worker_task(void *arg)
             portal_stop();
             continue;
         }
-#if CONFIG_CAPTIVE_WIFI_PORTAL_TIMEOUT_MIN > 0
-        /* stored network unreachable for a while: give it another chance */
-        if (s_try != TRY_CONNECTING && s_try != TRY_OK && captive_wifi_has_credentials() &&
-            now - s_portal_started > pdMS_TO_TICKS(CONFIG_CAPTIVE_WIFI_PORTAL_TIMEOUT_MIN * 60000)) {
-            ESP_LOGI(TAG, "portal timeout, retrying the stored network");
-            portal_stop();
+        /* portal open: the stored network is never given up, one attempt per pause.
+         * Not while the page's own attempt runs or a successful one is closing. */
+        if (retry_due && s_try != TRY_CONNECTING && s_try != TRY_OK && !s_bg_try) {
             wifi_config_t cfg = {0};
-            if (creds_load(&cfg) == ESP_OK) {
-                s_fail_count = 0;
+            if (creds_load(&cfg) == ESP_OK && cfg.sta.ssid[0]) {
+                ESP_LOGI(TAG, "portal: trying the stored network %s", cfg.sta.ssid);
+                s_retry_at = 0;
+                s_bg_try = true;
                 sta_set_config((char *)cfg.sta.ssid, (char *)cfg.sta.password);
                 esp_wifi_connect();
+            } else {
+                s_retry_at = 0;             /* nothing stored any more */
             }
         }
-#endif
     }
 }
 
@@ -675,6 +716,7 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
         s_got_ip = true;
         s_ever_connected = true;
         s_fail_count = 0;
+        s_retry_at = 0;
         if (s_portal) {
             if (s_try == TRY_CONNECTING) {
                 if (creds_save(s_try_ssid, s_try_pass) != ESP_OK) {
@@ -682,6 +724,11 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
                 }
                 s_try = TRY_OK;
                 s_stop_at = xTaskGetTickCount() + pdMS_TO_TICKS(STOP_DELAY_MS);
+            } else if (s_bg_try) {
+                /* the stored network is back: close the portal right away */
+                ESP_LOGI(TAG, "portal: stored network is back");
+                s_bg_try = false;
+                post(CMD_PORTAL_STOP);
             }
             /* STA_CONNECTED is sent once the portal is down */
         } else if (!s_connected) {
@@ -695,8 +742,11 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
             s_connected = false;
             emit(CAPTIVE_WIFI_EVT_STA_DISCONNECTED);
         }
+        if (!s_wifi_started) {
+            return;                         /* captive_wifi_stop() */
+        }
         if (s_portal) {
-            /* only the attempt started from the page is retried */
+            /* the attempt started from the page is retried a few times */
             if (s_try == TRY_CONNECTING && e->reason != WIFI_REASON_ASSOC_LEAVE) {
                 s_try_reason = e->reason;
                 if (++s_try_disconnects >= CONNECT_TRIES) {
@@ -706,16 +756,29 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
                 } else {
                     esp_wifi_connect();
                 }
+            } else if (s_bg_try) {
+                /* background attempt of the stored network failed: next one after the pause */
+                s_bg_try = false;
+                s_retry_at = retry_tick();
             }
             return;
         }
         s_fail_count++;
-        ESP_LOGI(TAG, "disconnected (%d, reason %d), reconnecting", s_fail_count, e->reason);
         if (!s_ever_connected && s_fail_count >= CONFIG_CAPTIVE_WIFI_MAX_RETRIES) {
-            /* the stored network never answered since boot: let the user fix it */
+            /* the stored network never answered since boot: open the portal for the user;
+             * the stored network keeps being tried in the background */
+            ESP_LOGI(TAG, "disconnected (%d, reason %d), starting the portal", s_fail_count, e->reason);
             post(CMD_PORTAL_START);
             return;
         }
+        if (s_fail_count % RETRY_BURST == 0) {
+            /* never give up, but pause between bursts (a restarting router needs time) */
+            ESP_LOGI(TAG, "disconnected (%d, reason %d), next attempt in %d s",
+                     s_fail_count, e->reason, CONFIG_CAPTIVE_WIFI_RETRY_PAUSE_S);
+            s_retry_at = retry_tick();
+            return;
+        }
+        ESP_LOGI(TAG, "disconnected (%d, reason %d), reconnecting", s_fail_count, e->reason);
         esp_wifi_connect();
     }
 }
@@ -740,7 +803,9 @@ esp_err_t captive_wifi_init(const char *hostname, captive_wifi_cb_t cb, void *ct
 
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
-    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "MPPT-%02X%02X%02X", mac[3], mac[4], mac[5]);
+    /* "<prefix>-XXXXXX": 24 + 1 + 6 characters + NUL fit s_ap_ssid[32] */
+    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%.24s-%02X%02X%02X",
+             CONFIG_CAPTIVE_WIFI_AP_SSID_PREFIX, mac[3], mac[4], mac[5]);
 
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL));
@@ -763,6 +828,7 @@ esp_err_t captive_wifi_start(void)
 {
     wifi_config_t cfg = {0};
     s_fail_count = 0;
+    s_retry_at = 0;
     s_ever_connected = false;
     if (creds_load(&cfg) != ESP_OK || cfg.sta.ssid[0] == 0) {
         ESP_LOGI(TAG, "no stored network");
@@ -780,8 +846,9 @@ esp_err_t captive_wifi_start(void)
 esp_err_t captive_wifi_stop(void)
 {
     portal_stop();
+    s_wifi_started = false;                 /* before the stop: no reconnect on its disconnect */
+    s_retry_at = 0;
     esp_err_t err = esp_wifi_stop();
-    s_wifi_started = false;
     s_got_ip = false;
     if (s_connected) {
         s_connected = false;

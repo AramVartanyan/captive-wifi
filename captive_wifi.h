@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-#define CAPTIVE_WIFI_VERSION "0.2.0"
+#define CAPTIVE_WIFI_VERSION "0.2.1"
 
 typedef enum {
     CAPTIVE_WIFI_EVT_STA_CONNECTED = 0,   /* got IP */
@@ -43,7 +43,7 @@ bool        captive_wifi_has_credentials(void);
 esp_err_t   captive_wifi_clear_credentials(void);   /* next start → portal */
 bool        captive_wifi_is_connected(void);
 bool        captive_wifi_portal_active(void);
-const char *captive_wifi_ap_ssid(void);             /* "MPPT-xxxxxx" */
+const char *captive_wifi_ap_ssid(void);             /* "<prefix>-xxxxxx" */
 const char *captive_wifi_portal_ip(void);           /* "192.168.4.1" */
 esp_err_t   captive_wifi_get_ip(char *buf, size_t len);
 int         captive_wifi_rssi(void);                /* dBm, 0 when not connected */
