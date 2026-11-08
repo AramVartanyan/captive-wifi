@@ -7,6 +7,15 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- The network is kept by the Wi-Fi driver (station config in NVS, `WIFI_STORAGE_FLASH` — the
+  ESP-IDF default) instead of the own namespace `cwifi`: `esp_wifi_get_config()` shows the stored
+  network to any other code, `esp_wifi_restore()` clears it. The network chosen on the page is
+  stored when the attempt starts; if it does not connect, the previously stored network is put back
+  (a typo still never replaces a working network). Background attempts no longer set the config
+  again (no NVS write per attempt).
+- `captive_wifi_clear_credentials()` calls `esp_wifi_restore()` (needs `captive_wifi_init()` first).
+- A network stored by an older version (namespace `cwifi`) is moved into the driver at the first
+  start, then the namespace is erased.
 - Portal: clearer messages when the page's network does not connect, shown in red: wrong password,
   network not found, signal too weak, security type not supported, router refused the connection,
   no answer; any other case shows the reason code. Reason 205 (`WIFI_REASON_CONNECTION_FAIL`) now

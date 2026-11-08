@@ -19,9 +19,10 @@
 
 static const char *TAG = "captive_wifi";
 
-#define NS          "cwifi"
-#define KEY_SSID    "ssid"
-#define KEY_PASS    "pass"
+/* Before 0.3.0 the network was kept in this NVS namespace; it is moved into the driver once */
+#define LEGACY_NS       "cwifi"
+#define LEGACY_SSID     "ssid"
+#define LEGACY_PASS     "pass"
 
 #define PORTAL_URI          "http://192.168.4.1/"
 #define AP_MAX_CLIENTS      4
@@ -65,6 +66,9 @@ static volatile TickType_t s_retry_at; /* 0 = no retry pending; else next attemp
 static volatile bool s_bg_try;         /* portal: background attempt of the stored network */
 static volatile TickType_t s_try_kick_at; /* portal: safety-net esp_wifi_connect() for the page's attempt, 0 = none */
 static volatile bool s_try_cfg_pending;   /* portal: the page's network is not set in the driver yet */
+static wifi_config_t s_saved;             /* the stored network (kept by the driver in NVS), RAM copy */
+static bool s_saved_loaded;               /* s_saved read from the driver (captive_wifi_start()) */
+static volatile bool s_restore_pending;   /* portal: the page's network failed, s_saved goes back */
 
 /* portal connection attempt, shown on the page through /status */
 static volatile try_state_t s_try;
@@ -95,17 +99,22 @@ static TickType_t retry_tick(void)
 
 /* ------------------------------------------------------------ credentials */
 
-static esp_err_t creds_load(wifi_config_t *cfg)
+/* The network is kept where ESP-IDF itself keeps it: the station config of the Wi-Fi driver,
+ * stored in NVS (WIFI_STORAGE_FLASH, the default). So "is a network stored" means the same
+ * here as for any other code that reads esp_wifi_get_config(), and esp_wifi_restore() clears
+ * it for everyone. */
+
+static esp_err_t legacy_load(wifi_config_t *cfg)
 {
     nvs_handle_t h;
-    esp_err_t err = nvs_open(NS, NVS_READONLY, &h);
+    esp_err_t err = nvs_open(LEGACY_NS, NVS_READONLY, &h);
     if (err != ESP_OK) {
         return err;
     }
     size_t l1 = sizeof(cfg->sta.ssid), l2 = sizeof(cfg->sta.password);
-    err = nvs_get_str(h, KEY_SSID, (char *)cfg->sta.ssid, &l1);
+    err = nvs_get_str(h, LEGACY_SSID, (char *)cfg->sta.ssid, &l1);
     if (err == ESP_OK) {
-        err = nvs_get_str(h, KEY_PASS, (char *)cfg->sta.password, &l2);
+        err = nvs_get_str(h, LEGACY_PASS, (char *)cfg->sta.password, &l2);
         if (err == ESP_ERR_NVS_NOT_FOUND) {      /* open network */
             cfg->sta.password[0] = 0;
             err = ESP_OK;
@@ -115,49 +124,42 @@ static esp_err_t creds_load(wifi_config_t *cfg)
     return err;
 }
 
-static esp_err_t creds_save(const char *ssid, const char *pass)
+static void legacy_erase(void)
 {
     nvs_handle_t h;
-    esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
-    if (err != ESP_OK) {
-        return err;
+    if (nvs_open(LEGACY_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_all(h);
+        nvs_commit(h);
+        nvs_close(h);
     }
-    err = nvs_set_str(h, KEY_SSID, ssid);
-    if (err == ESP_OK) {
-        err = pass[0] ? nvs_set_str(h, KEY_PASS, pass) : nvs_erase_key(h, KEY_PASS);
-        if (err == ESP_ERR_NVS_NOT_FOUND) {
-            err = ESP_OK;
-        }
-    }
-    if (err == ESP_OK) {
-        err = nvs_commit(h);
-    }
-    nvs_close(h);
-    return err;
 }
 
 bool captive_wifi_has_credentials(void)
 {
+    if (s_saved_loaded) {
+        return s_saved.sta.ssid[0] != 0;
+    }
     wifi_config_t cfg = {0};
-    return creds_load(&cfg) == ESP_OK && cfg.sta.ssid[0] != 0;
+    if (esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK && cfg.sta.ssid[0]) {
+        return true;
+    }
+    return legacy_load(&cfg) == ESP_OK && cfg.sta.ssid[0] != 0;   /* not moved yet */
 }
 
 esp_err_t captive_wifi_clear_credentials(void)
 {
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
-    if (err != ESP_OK) {
-        return err;
-    }
-    nvs_erase_all(h);
-    err = nvs_commit(h);
-    nvs_close(h);
+    /* station config (and mode) back to the defaults, in NVS too */
+    esp_err_t err = esp_wifi_restore();
+    legacy_erase();
+    memset(&s_saved, 0, sizeof(s_saved));
+    s_restore_pending = false;
     ESP_LOGI(TAG, "credentials cleared");
     return err;
 }
 
-/* Can fail with ESP_ERR_WIFI_STATE while the driver is still connecting (esp_wifi_disconnect()
- * is asynchronous); the station then keeps its previous config. */
+/* Sets and stores (NVS) the station config. Can fail with ESP_ERR_WIFI_STATE while the driver
+ * is still connecting (esp_wifi_disconnect() is asynchronous); the station then keeps its
+ * previous config. */
 static esp_err_t sta_set_config(const char *ssid, const char *pass)
 {
     wifi_config_t cfg = {0};
@@ -489,6 +491,7 @@ static esp_err_t connect_post(httpd_req_t *req)
     strlcpy(s_try_pass, pass, sizeof(s_try_pass));
     s_try_disconnects = 0;
     s_try_reason = 0;
+    s_restore_pending = false;              /* this attempt sets its own network */
     s_try_started = xTaskGetTickCount();
     s_stop_at = 0;                          /* a second network chosen within the 10 s after a success */
     s_try = TRY_CONNECTING;
@@ -730,8 +733,19 @@ static void worker_task(void *arg)
             now - s_try_started > pdMS_TO_TICKS(CONNECT_TIMEOUT_MS)) {
             ESP_LOGW(TAG, "portal: no connection to %s", s_try_ssid);
             esp_wifi_disconnect();
+            s_restore_pending = true;
             s_try = TRY_FAILED;
             emit(CAPTIVE_WIFI_EVT_PORTAL_CONNECT_FAILED);
+        }
+        /* the page's network did not connect: the stored network goes back into the driver
+         * (and NVS); retried each period while the driver still refuses it */
+        if (s_restore_pending && s_try != TRY_CONNECTING) {
+            if (esp_wifi_set_config(WIFI_IF_STA, &s_saved) == ESP_OK) {
+                s_restore_pending = false;
+                if (s_saved.sta.ssid[0]) {
+                    ESP_LOGI(TAG, "portal: the stored network %s is kept", (char *)s_saved.sta.ssid);
+                }
+            }
         }
         if (s_stop_at && (int32_t)(now - s_stop_at) >= 0) {
             portal_stop();
@@ -739,17 +753,14 @@ static void worker_task(void *arg)
         }
         /* portal open: the stored network is never given up, one attempt per pause.
          * Not while the page's own attempt runs or a successful one is closing. */
-        if (retry_due && s_try != TRY_CONNECTING && s_try != TRY_OK && !s_bg_try) {
-            wifi_config_t cfg = {0};
-            if (creds_load(&cfg) == ESP_OK && cfg.sta.ssid[0]) {
-                ESP_LOGI(TAG, "portal: trying the stored network %s", cfg.sta.ssid);
-                s_retry_at = 0;
+        if (retry_due && s_try != TRY_CONNECTING && s_try != TRY_OK && !s_bg_try &&
+            !s_restore_pending) {
+            s_retry_at = 0;
+            if (s_saved.sta.ssid[0]) {      /* the driver holds it (put back after a failed page attempt) */
+                ESP_LOGI(TAG, "portal: trying the stored network %s", (char *)s_saved.sta.ssid);
                 s_bg_try = true;
-                sta_set_config((char *)cfg.sta.ssid, (char *)cfg.sta.password);
                 esp_wifi_connect();
-            } else {
-                s_retry_at = 0;             /* nothing stored any more */
-            }
+            }                               /* else nothing stored any more */
         }
     }
 }
@@ -794,9 +805,8 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
                 return;
             }
             if (s_try == TRY_CONNECTING) {
-                if (creds_save(s_try_ssid, s_try_pass) != ESP_OK) {
-                    ESP_LOGE(TAG, "credentials not saved");
-                }
+                /* the page's network, already stored by sta_set_config(), is now the stored one */
+                esp_wifi_get_config(WIFI_IF_STA, &s_saved);
                 s_try = TRY_OK;
                 s_stop_at = xTaskGetTickCount() + pdMS_TO_TICKS(STOP_DELAY_MS);
             } else if (s_bg_try) {
@@ -831,6 +841,7 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
                     const char *t = reason_text(e->reason);
                     ESP_LOGW(TAG, "portal: %s failed, reason %d%s%s%s", s_try_ssid, e->reason,
                              t ? " (" : "", t ? t : "", t ? ")" : "");
+                    s_restore_pending = true;
                     s_try = TRY_FAILED;
                     emit(CAPTIVE_WIFI_EVT_PORTAL_CONNECT_FAILED);
                 } else {
@@ -895,7 +906,7 @@ esp_err_t captive_wifi_init(const char *hostname, captive_wifi_cb_t cb, void *ct
     if (err != ESP_OK) {
         return err;
     }
-    esp_wifi_set_storage(WIFI_STORAGE_RAM);  /* credentials live in our own NVS keys */
+    esp_wifi_set_storage(WIFI_STORAGE_FLASH);  /* the default: the driver keeps the network in NVS */
 
     s_cmd = xQueueCreate(4, sizeof(cmd_t));
     if (!s_cmd || xTaskCreate(worker_task, "cwifi", 4096, NULL, 3, NULL) != pdPASS) {
@@ -906,18 +917,31 @@ esp_err_t captive_wifi_init(const char *hostname, captive_wifi_cb_t cb, void *ct
 
 esp_err_t captive_wifi_start(void)
 {
-    wifi_config_t cfg = {0};
     s_fail_count = 0;
     s_retry_at = 0;
     s_ever_connected = false;
-    if (creds_load(&cfg) != ESP_OK || cfg.sta.ssid[0] == 0) {
+    s_restore_pending = false;
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    memset(&s_saved, 0, sizeof(s_saved));
+    esp_wifi_get_config(WIFI_IF_STA, &s_saved);
+    /* the namespace of the older versions wins: it is what they really used, while the driver
+     * may still hold a network stored by some earlier firmware */
+    wifi_config_t legacy = {0};
+    if (legacy_load(&legacy) == ESP_OK) {
+        if (legacy.sta.ssid[0] &&
+            sta_set_config((char *)legacy.sta.ssid, (char *)legacy.sta.password) == ESP_OK) {
+            esp_wifi_get_config(WIFI_IF_STA, &s_saved);
+            ESP_LOGI(TAG, "stored network moved into the Wi-Fi driver");
+        }
+        legacy_erase();
+    }
+    s_saved_loaded = true;
+    if (s_saved.sta.ssid[0] == 0) {
         ESP_LOGI(TAG, "no stored network");
         post(CMD_PORTAL_START);
         return ESP_OK;
     }
-    ESP_LOGI(TAG, "connecting to %s", cfg.sta.ssid);
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    sta_set_config((char *)cfg.sta.ssid, (char *)cfg.sta.password);
+    ESP_LOGI(TAG, "connecting to %s", (char *)s_saved.sta.ssid);
     esp_err_t err = esp_wifi_start();
     s_wifi_started = (err == ESP_OK);
     return err;
