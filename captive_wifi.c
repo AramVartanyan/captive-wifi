@@ -62,6 +62,7 @@ static volatile bool s_wifi_started;
 static int  s_fail_count;
 static volatile TickType_t s_retry_at; /* 0 = no retry pending; else next attempt of the stored network */
 static volatile bool s_bg_try;         /* portal: background attempt of the stored network */
+static volatile bool s_try_kick;       /* portal: the page's attempt still has to call esp_wifi_connect() */
 
 /* portal connection attempt, shown on the page through /status */
 static volatile try_state_t s_try;
@@ -477,12 +478,15 @@ static esp_err_t connect_post(httpd_req_t *req)
     ESP_LOGI(TAG, "portal: connecting to %s", s_try_ssid);
 
     send_json(req, "{\"ok\":true}");        /* answer before the radio may change channel */
-    if (s_got_ip || s_bg_try) {
+    bool busy = s_got_ip || s_bg_try;
+    if (busy) {
         s_bg_try = false;                   /* the page's network takes over */
         esp_wifi_disconnect();
     }
     sta_set_config(s_try_ssid, s_try_pass);
-    esp_wifi_connect();
+    /* Right after esp_wifi_disconnect() the driver may still be connecting and refuses a new
+     * esp_wifi_connect() ("sta is connecting"); the worker starts the attempt a moment later. */
+    s_try_kick = busy || esp_wifi_connect() != ESP_OK;
     return ESP_OK;
 }
 
@@ -663,6 +667,13 @@ static void worker_task(void *arg)
                 esp_wifi_connect();
             }
             continue;
+        }
+        if (s_try == TRY_CONNECTING && s_try_kick) {
+            if (esp_wifi_connect() == ESP_OK) {
+                s_try_kick = false;
+            }
+        } else if (s_try != TRY_CONNECTING) {
+            s_try_kick = false;
         }
         if (s_try == TRY_CONNECTING &&
             now - s_try_started > pdMS_TO_TICKS(CONNECT_TIMEOUT_MS)) {

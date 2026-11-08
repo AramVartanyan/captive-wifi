@@ -6,6 +6,12 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Portal: a network chosen on the page while a background attempt of the stored network was
+  running got `esp_wifi_connect()` refused by the driver ("sta is connecting") right after
+  `esp_wifi_disconnect()`; it only worked because the new config was picked up by chance. The
+  attempt is now started by the worker task a moment later (retried every 0.5 s until accepted).
+
 ### Added
 - `README.md` — credits to the original project (tonyp7/esp32-wifi-manager by Tony Pottier) and
   the ESP-IDF captive_portal example, features, behaviour, API, Kconfig, integration notes.
