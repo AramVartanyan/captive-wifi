@@ -11,7 +11,15 @@ versions follow [Semantic Versioning](https://semver.org/).
   the ESP-IDF captive_portal example, features, behaviour, API, Kconfig, integration notes.
 - `Changelog.md` — this file, with the history from the mppt-1k project.
 
-## [0.2.1] — in development (not tested)
+## [0.2.1] — tested on hardware
+
+Tested on ESP32-S3 (Waveshare ESP32-S3-Zero, ESP-IDF 5.5.4) in solar-heater-hap:
+SoftAP `SOLAR-XXXXXX` from the Kconfig prefix; portal page, connection to the chosen network and
+portal closing without a reboot; reconnection to the stored network after a reboot; router off
+while connected → bursts of 5 attempts with 60 s pauses, no portal, reconnection when the router
+is back; boot with the router off → portal after 10 attempts, the stored network tried in the
+background every 60 s, a network chosen on the page takes priority over a running background
+attempt; the SoftAP follows the station channel (1 → 6).
 
 ### Added
 - `CONFIG_CAPTIVE_WIFI_AP_SSID_PREFIX` — short device name for the setup SoftAP
