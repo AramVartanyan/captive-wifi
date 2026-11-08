@@ -293,7 +293,7 @@ static const char PAGE[] =
 "border-radius:999px;color:#fff;background:var(--green);font-family:inherit}"
 "button.sec{background:var(--blue)}button:active{opacity:.7}"
 "label{display:flex;align-items:center;gap:8px;margin:0 6px 14px;color:var(--sub);font-size:15px}"
-"#st{margin:12px 6px;font-weight:600;text-align:center}"
+"#st{margin:12px 6px;font-weight:600;text-align:center}#st.err{color:#FF3B30}"
 "</style></head><body>"
 "<h1 id='dev'>Wi-Fi setup</h1><p>Choose the network for this device.</p>"
 "<button class='sec' onclick='scan()'>Scan again</button>"
@@ -314,7 +314,7 @@ static const char PAGE[] =
 "d.onclick=()=>{document.querySelectorAll('#list div').forEach(x=>x.className='');"
 "d.className='sel';ssid.value=n.ssid;pass.focus()};list.appendChild(d)})})"
 ".catch(()=>msg('Scan failed'))}"
-"function conn(){if(!ssid.value){st.textContent='Choose a network';return}"
+"function conn(){st.className='';if(!ssid.value){st.textContent='Choose a network';return}"
 "st.textContent='Connecting...';let b='ssid='+encodeURIComponent(ssid.value)+"
 "'&pass='+encodeURIComponent(pass.value);"
 "fetch('/connect',{method:'POST',body:b}).then(r=>r.json()).then(j=>{"
@@ -322,7 +322,7 @@ static const char PAGE[] =
 "function poll(){fetch('/status').then(r=>r.json()).then(j=>{"
 "if(j.state=='connecting'){st.textContent='Connecting...';setTimeout(poll,1500)}"
 "else if(j.state=='ok')st.textContent='Connected, IP '+j.ip+'. The device leaves setup mode now.';"
-"else if(j.state=='failed')st.textContent='Not connected: '+j.msg;"
+"else if(j.state=='failed'){st.className='err';st.textContent=j.msg}"
 "}).catch(()=>{st.textContent='Connecting... (the phone may drop this network for a moment)';"
 "setTimeout(poll,2000)})}"
 "fetch('/status').then(r=>r.json()).then(j=>{dev.textContent=j.device;"
@@ -363,21 +363,33 @@ static void url_decode(char *s)
     *o = 0;
 }
 
+/* Text for the page and the log; NULL = no specific text (the page shows the reason code).
+ * WPA2 has no "wrong password" message: the access point just drops the 4-way handshake.
+ * Depending on the access point the driver reports 15, 202, 204 or, after trying several
+ * access points of the same network (mesh), 205 (seen on hardware, ESP-IDF 5.5.4). */
 static const char *reason_text(int reason)
 {
     switch (reason) {
-    case WIFI_REASON_NO_AP_FOUND:
-        return "network not found";
-    case WIFI_REASON_AUTH_FAIL:
     case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_AUTH_FAIL:
     case WIFI_REASON_HANDSHAKE_TIMEOUT:
-        return "wrong password?";
+    case WIFI_REASON_CONNECTION_FAIL:
+        return "Wrong password. Check it and try again.";
+    case WIFI_REASON_NO_AP_FOUND:
+        return "Network not found. Check the name or move the device closer to the router.";
+    case WIFI_REASON_BEACON_TIMEOUT:
+    case WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD:
+        return "The signal is too weak. Move the device closer to the router.";
     case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
-        return "unsupported security";
+    case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+        return "The security type of this network is not supported.";
+    case WIFI_REASON_ASSOC_TOOMANY:
+    case WIFI_REASON_ASSOC_FAIL:
+        return "The router refused the connection (too many devices?).";
     case 0:
-        return "no answer from the network";
+        return "No answer from the network.";
     default:
-        return "connection failed";
+        return NULL;
     }
 }
 
@@ -512,7 +524,7 @@ static esp_err_t connect_post(httpd_req_t *req)
 
 static esp_err_t status_get(httpd_req_t *req)
 {
-    char dev[80], json[200];
+    char dev[80], msg[96], json[280];
     json_str(dev, sizeof(dev), s_ap_ssid);
     switch (s_try) {
     case TRY_CONNECTING:
@@ -524,10 +536,18 @@ static esp_err_t status_get(httpd_req_t *req)
         snprintf(json, sizeof(json), "{\"device\":\"%s\",\"state\":\"ok\",\"ip\":\"%s\"}", dev, ip);
         break;
     }
-    case TRY_FAILED:
+    case TRY_FAILED: {
+        int reason = s_try_reason;
+        const char *t = reason_text(reason);
+        if (t) {
+            strlcpy(msg, t, sizeof(msg));
+        } else {
+            snprintf(msg, sizeof(msg), "Not connected (reason %d). Try again.", reason);
+        }
         snprintf(json, sizeof(json), "{\"device\":\"%s\",\"state\":\"failed\",\"msg\":\"%s\"}",
-                 dev, reason_text(s_try_reason));
+                 dev, msg);
         break;
+    }
     default:
         snprintf(json, sizeof(json), "{\"device\":\"%s\",\"state\":\"idle\"}", dev);
         break;
@@ -808,7 +828,9 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
                 s_try_kick_at = 0;          /* an attempt ran and failed: retried right here */
                 s_try_reason = e->reason;
                 if (++s_try_disconnects >= CONNECT_TRIES) {
-                    ESP_LOGW(TAG, "portal: %s failed, reason %d", s_try_ssid, e->reason);
+                    const char *t = reason_text(e->reason);
+                    ESP_LOGW(TAG, "portal: %s failed, reason %d%s%s%s", s_try_ssid, e->reason,
+                             t ? " (" : "", t ? t : "", t ? ")" : "");
                     s_try = TRY_FAILED;
                     emit(CAPTIVE_WIFI_EVT_PORTAL_CONNECT_FAILED);
                 } else {

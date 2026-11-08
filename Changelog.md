@@ -6,6 +6,14 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- Portal: clearer messages when the page's network does not connect, shown in red: wrong password,
+  network not found, signal too weak, security type not supported, router refused the connection,
+  no answer; any other case shows the reason code. Reason 205 (`WIFI_REASON_CONNECTION_FAIL`) now
+  counts as a wrong password too — seen on hardware (ESP-IDF 5.5.4) with a wrong password on a
+  mesh network, where the page used to show only "Not connected: connection failed".
+- Log: the failed page attempt names the cause next to the reason code.
+
 ## [0.2.2] — tested on hardware
 
 Tested on ESP32-S3 (ESP-IDF 5.5.4) in solar-heater-hap: a network chosen on the page 3.4 s after a
