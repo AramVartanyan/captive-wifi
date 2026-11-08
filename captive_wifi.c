@@ -11,18 +11,11 @@
 #include "esp_netif.h"
 #include "esp_mac.h"
 #include "esp_http_server.h"
-#include "nvs_flash.h"
-#include "nvs.h"
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
 #include "captive_wifi.h"
 
 static const char *TAG = "captive_wifi";
-
-/* Before 0.3.0 the network was kept in this NVS namespace; it is moved into the driver once */
-#define LEGACY_NS       "cwifi"
-#define LEGACY_SSID     "ssid"
-#define LEGACY_PASS     "pass"
 
 #define PORTAL_URI          "http://192.168.4.1/"
 #define AP_MAX_CLIENTS      4
@@ -104,53 +97,19 @@ static TickType_t retry_tick(void)
  * here as for any other code that reads esp_wifi_get_config(), and esp_wifi_restore() clears
  * it for everyone. */
 
-static esp_err_t legacy_load(wifi_config_t *cfg)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(LEGACY_NS, NVS_READONLY, &h);
-    if (err != ESP_OK) {
-        return err;
-    }
-    size_t l1 = sizeof(cfg->sta.ssid), l2 = sizeof(cfg->sta.password);
-    err = nvs_get_str(h, LEGACY_SSID, (char *)cfg->sta.ssid, &l1);
-    if (err == ESP_OK) {
-        err = nvs_get_str(h, LEGACY_PASS, (char *)cfg->sta.password, &l2);
-        if (err == ESP_ERR_NVS_NOT_FOUND) {      /* open network */
-            cfg->sta.password[0] = 0;
-            err = ESP_OK;
-        }
-    }
-    nvs_close(h);
-    return err;
-}
-
-static void legacy_erase(void)
-{
-    nvs_handle_t h;
-    if (nvs_open(LEGACY_NS, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_erase_all(h);
-        nvs_commit(h);
-        nvs_close(h);
-    }
-}
-
 bool captive_wifi_has_credentials(void)
 {
     if (s_saved_loaded) {
         return s_saved.sta.ssid[0] != 0;
     }
     wifi_config_t cfg = {0};
-    if (esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK && cfg.sta.ssid[0]) {
-        return true;
-    }
-    return legacy_load(&cfg) == ESP_OK && cfg.sta.ssid[0] != 0;   /* not moved yet */
+    return esp_wifi_get_config(WIFI_IF_STA, &cfg) == ESP_OK && cfg.sta.ssid[0] != 0;
 }
 
 esp_err_t captive_wifi_clear_credentials(void)
 {
     /* station config (and mode) back to the defaults, in NVS too */
     esp_err_t err = esp_wifi_restore();
-    legacy_erase();
     memset(&s_saved, 0, sizeof(s_saved));
     s_restore_pending = false;
     ESP_LOGI(TAG, "credentials cleared");
@@ -924,17 +883,6 @@ esp_err_t captive_wifi_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     memset(&s_saved, 0, sizeof(s_saved));
     esp_wifi_get_config(WIFI_IF_STA, &s_saved);
-    /* the namespace of the older versions wins: it is what they really used, while the driver
-     * may still hold a network stored by some earlier firmware */
-    wifi_config_t legacy = {0};
-    if (legacy_load(&legacy) == ESP_OK) {
-        if (legacy.sta.ssid[0] &&
-            sta_set_config((char *)legacy.sta.ssid, (char *)legacy.sta.password) == ESP_OK) {
-            esp_wifi_get_config(WIFI_IF_STA, &s_saved);
-            ESP_LOGI(TAG, "stored network moved into the Wi-Fi driver");
-        }
-        legacy_erase();
-    }
     s_saved_loaded = true;
     if (s_saved.sta.ssid[0] == 0) {
         ESP_LOGI(TAG, "no stored network");

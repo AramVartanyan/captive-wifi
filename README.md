@@ -32,8 +32,10 @@ ESP32-S2 (ESP-IDF 5.5.4) in [mppt-1k](https://github.com/AramVartanyan/mppt-1k).
   stored network is put back, so a typo never replaces a working network.
 - After a successful connection the portal stops (10 s later) and the device stays in STA — **no reboot**.
 - Event callback for the application (LED, display, starting HomeKit, ...).
-- No dependencies beyond ESP-IDF components: `esp_wifi`, `esp_netif`, `esp_event`, `nvs_flash`,
+- No dependencies beyond ESP-IDF components: `esp_wifi`, `esp_netif`, `esp_event`,
   `esp_http_server`, `lwip`.
+  The application calls `nvs_flash_init()` before `captive_wifi_init()` (the driver keeps the network
+  in NVS).
 
 ## Behaviour
 
@@ -54,8 +56,6 @@ ESP32-S2 (ESP-IDF 5.5.4) in [mppt-1k](https://github.com/AramVartanyan/mppt-1k).
    `CAPTIVE_WIFI_EVT_STA_CONNECTED`, so nothing started on the connection meets the portal's web server.
 6. `captive_wifi_clear_credentials()` (`esp_wifi_restore()`) + `captive_wifi_start()` → back to the
    portal (e.g. "Reset Wi-Fi"); the same happens after any other code calls `esp_wifi_restore()`.
-7. Versions before 0.3.0 kept the network in the NVS namespace `cwifi`: it is moved into the driver
-   once, at the first start, so an update keeps the network.
 
 ## API
 
