@@ -6,6 +6,12 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] — tested on hardware
+
+Tested on ESP32-S3 (ESP-IDF 5.5.4) in solar-heater-hap: a network chosen on the page 3.4 s after a
+background attempt started — the driver went on with the new config by itself, associated 110 ms
+after the click, no driver error or warning, portal closed without a reboot.
+
 ### Fixed
 - Portal: a network chosen on the page while a background attempt of the stored network was
   running — `esp_wifi_connect()` right after `esp_wifi_disconnect()` was refused by the driver
@@ -24,11 +30,6 @@ versions follow [Semantic Versioning](https://semver.org/).
   started; events of the interrupted attempt do not count as tries of the page's network; and a
   connection to a different SSID than the chosen one is dropped and the chosen one is used.
 
-### Added
-- `README.md` — credits to the original project (tonyp7/esp32-wifi-manager by Tony Pottier) and
-  the ESP-IDF captive_portal example, features, behaviour, API, Kconfig, integration notes.
-- `Changelog.md` — this file, with the history from the mppt-1k project.
-
 ## [0.2.1] — tested on hardware
 
 Tested on ESP32-S3 (Waveshare ESP32-S3-Zero, ESP-IDF 5.5.4) in solar-heater-hap:
@@ -40,6 +41,9 @@ background every 60 s, a network chosen on the page takes priority over a runnin
 attempt; the SoftAP follows the station channel (1 → 6).
 
 ### Added
+- `README.md` — credits to the original project (tonyp7/esp32-wifi-manager by Tony Pottier) and
+  the ESP-IDF captive_portal example, features, behaviour, API, Kconfig, integration notes.
+- `Changelog.md` — this file, with the history from the mppt-1k project.
 - `CONFIG_CAPTIVE_WIFI_AP_SSID_PREFIX` — short device name for the setup SoftAP
   (`<prefix>-XXXXXX`, default `ESP`, max 24 characters). Replaces the fixed `MPPT-` prefix,
   so the component can be shared between projects (mppt-1k: `MPPT`).

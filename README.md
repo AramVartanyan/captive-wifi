@@ -13,7 +13,7 @@ Wi-Fi station management with a captive-portal fallback for **ESP-IDF 5.x**.
 
 Created by Aram Vartanyan, (C) 2026. MIT licence (see [LICENSE](LICENSE)).
 
-**Version:** 0.2.1 — tested on hardware: ESP32-S3 (ESP-IDF 5.5.4) in solar-heater-hap; 0.2.0 on
+**Version:** 0.2.2 — tested on hardware: ESP32-S3 (ESP-IDF 5.5.4) in solar-heater-hap; 0.2.0 on
 ESP32-S2 (ESP-IDF 5.5.4) in [mppt-1k](https://github.com/AramVartanyan/mppt-1k).
 
 ## Features
