@@ -16,6 +16,13 @@ versions follow [Semantic Versioning](https://semver.org/).
   errors and, once connected, a "sta is connected, disconnect before connecting" warning.)
 - Portal: choosing another network within the 10 s after a successful connection no longer lets
   the pending portal stop cut the new attempt short.
+- Portal: `esp_wifi_set_config()` right after `esp_wifi_disconnect()` can fail with
+  `ESP_ERR_WIFI_STATE` (the disconnect is asynchronous; the driver behaviour differs between
+  ESP-IDF versions). The result was ignored, so the interrupted attempt could go on with the old
+  (stored) network and its credentials were then saved under the page's network. Now a refused
+  config is set again by the worker task as soon as the driver accepts it, before the attempt is
+  started; events of the interrupted attempt do not count as tries of the page's network; and a
+  connection to a different SSID than the chosen one is dropped and the chosen one is used.
 
 ### Added
 - `README.md` — credits to the original project (tonyp7/esp32-wifi-manager by Tony Pottier) and
