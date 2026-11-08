@@ -29,6 +29,7 @@ static const char *TAG = "captive_wifi";
 #define CONNECT_TIMEOUT_MS  30000   /* portal: give up on a connection attempt */
 #define CONNECT_TRIES       3       /* portal: disconnects before giving up */
 #define STOP_DELAY_MS       10000   /* portal: keep the page up after success */
+#define KICK_DELAY_MS       5000    /* portal: safety-net connect if the driver did not go on by itself */
 #define WORKER_PERIOD_MS    500
 #define RETRY_BURST         CONFIG_CAPTIVE_WIFI_RETRY_BURST
 #define RETRY_PAUSE         pdMS_TO_TICKS(CONFIG_CAPTIVE_WIFI_RETRY_PAUSE_S * 1000)
@@ -62,7 +63,7 @@ static volatile bool s_wifi_started;
 static int  s_fail_count;
 static volatile TickType_t s_retry_at; /* 0 = no retry pending; else next attempt of the stored network */
 static volatile bool s_bg_try;         /* portal: background attempt of the stored network */
-static volatile bool s_try_kick;       /* portal: the page's attempt still has to call esp_wifi_connect() */
+static volatile TickType_t s_try_kick_at; /* portal: safety-net esp_wifi_connect() for the page's attempt, 0 = none */
 
 /* portal connection attempt, shown on the page through /status */
 static volatile try_state_t s_try;
@@ -474,6 +475,7 @@ static esp_err_t connect_post(httpd_req_t *req)
     s_try_disconnects = 0;
     s_try_reason = 0;
     s_try_started = xTaskGetTickCount();
+    s_stop_at = 0;                          /* a second network chosen within the 10 s after a success */
     s_try = TRY_CONNECTING;
     ESP_LOGI(TAG, "portal: connecting to %s", s_try_ssid);
 
@@ -484,12 +486,17 @@ static esp_err_t connect_post(httpd_req_t *req)
         esp_wifi_disconnect();
     }
     sta_set_config(s_try_ssid, s_try_pass);
-    /* Right after esp_wifi_disconnect() the driver is often still busy: it refuses a new
-     * esp_wifi_connect() ("sta is connecting") and usually goes on with the new config by
-     * itself. The worker makes one esp_wifi_connect() 0.5 s later, unless the station has
-     * already associated; a refused call means an attempt is running and its result arrives
-     * as a disconnect (retried below) or got-IP event. */
-    s_try_kick = busy || esp_wifi_connect() != ESP_OK;
+    /* An attempt interrupted by esp_wifi_disconnect() is not finished at once: the driver
+     * goes on by itself with the new config (seen on hardware: auth 90 ms later) and refuses
+     * an esp_wifi_connect() meanwhile ("sta is connecting"). So no call now; only if nothing
+     * at all happened within KICK_DELAY_MS (no association, no failed attempt) does the
+     * worker start the attempt itself. */
+    if (busy || esp_wifi_connect() != ESP_OK) {
+        TickType_t t = xTaskGetTickCount() + pdMS_TO_TICKS(KICK_DELAY_MS);
+        s_try_kick_at = t ? t : 1;
+    } else {
+        s_try_kick_at = 0;
+    }
     return ESP_OK;
 }
 
@@ -671,9 +678,11 @@ static void worker_task(void *arg)
             }
             continue;
         }
-        if (s_try_kick) {
-            s_try_kick = false;             /* one call: never against a running attempt again */
+        TickType_t kick_at = s_try_kick_at;
+        if (kick_at && (int32_t)(now - kick_at) >= 0) {
+            s_try_kick_at = 0;              /* one call only */
             if (s_try == TRY_CONNECTING) {
+                ESP_LOGI(TAG, "portal: starting the attempt to %s", s_try_ssid);
                 esp_wifi_connect();
             }
         }
@@ -722,7 +731,7 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
             esp_wifi_connect();
         }
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
-        s_try_kick = false;                 /* the station associated: nothing left to start */
+        s_try_kick_at = 0;                  /* the station associated: nothing left to start */
         esp_netif_create_ip6_linklocal(s_sta_netif);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
@@ -762,6 +771,7 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
         if (s_portal) {
             /* the attempt started from the page is retried a few times */
             if (s_try == TRY_CONNECTING && e->reason != WIFI_REASON_ASSOC_LEAVE) {
+                s_try_kick_at = 0;          /* an attempt ran and failed: retried right here */
                 s_try_reason = e->reason;
                 if (++s_try_disconnects >= CONNECT_TRIES) {
                     ESP_LOGW(TAG, "portal: %s failed, reason %d", s_try_ssid, e->reason);
