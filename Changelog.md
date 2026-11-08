@@ -6,6 +6,14 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-11-08, tested on hardware
+
+Tested on ESP32-S3 (ESP-IDF 5.5.4) in solar-heater-hap, starting from erased flash: no stored
+network → portal → network chosen → connected, directly connected after a reboot; a wrong password
+for another network while the stored one was out of reach → red "Wrong password" (reason 15), the
+stored network was put back and connected by itself from the next background attempt, portal closed;
+`captive_wifi_clear_credentials()` → restart → portal; erasing the whole NVS partition → portal.
+
 ### Changed
 - The network is kept by the Wi-Fi driver (station config in NVS, `WIFI_STORAGE_FLASH` — the
   ESP-IDF default) instead of an own NVS namespace: `esp_wifi_get_config()` shows the stored
