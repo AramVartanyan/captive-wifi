@@ -18,6 +18,8 @@
 static const char *TAG = "captive_wifi";
 
 #define PORTAL_URI          "http://192.168.4.1/"
+#define NO_PORTAL_URI       "urn:ietf:params:capport:unrestricted"   /* RFC 8910: no captive portal */
+#define PORTAL_IDLE         pdMS_TO_TICKS((uint32_t)CONFIG_CAPTIVE_WIFI_PORTAL_IDLE_MIN * 60u * 1000u)
 #define AP_MAX_CLIENTS      4
 #define SCAN_MAX            20
 #define CONNECT_TIMEOUT_MS  30000   /* portal: give up on a connection attempt */
@@ -33,6 +35,7 @@ static const char *TAG = "captive_wifi";
 typedef enum {
     CMD_PORTAL_START,
     CMD_PORTAL_STOP,
+    CMD_AP_START,
 } cmd_t;
 
 typedef enum {
@@ -71,6 +74,14 @@ static TickType_t s_try_started;
 static TickType_t s_stop_at;           /* 0 = no stop pending */
 static char s_try_ssid[33];
 static char s_try_pass[65];
+
+/* the access point (portal or AP only): its stations and since when it has none */
+static volatile int s_clients;
+static volatile TickType_t s_idle_since;
+/* access point only (captive_wifi_start_ap()) */
+static volatile bool s_ap_only;
+static volatile uint32_t s_ap_idle_s;
+static portMUX_TYPE s_ap_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static httpd_handle_t s_httpd;
 static volatile bool s_dns_run;
@@ -557,6 +568,103 @@ static esp_err_t http_start(void)
     return ESP_OK;
 }
 
+/* ----------------------------------------------------------- access point */
+
+/* The SoftAP "<prefix>-xxxxxx" in `mode` (APSTA for the portal, AP for AP only), the radio started;
+ * DHCP option 114 = `uri` (the sign-in page, or "no captive portal"). The idle count starts. */
+static void ap_up(wifi_mode_t mode, const char *uri)
+{
+    wifi_config_t ap = {0};
+    strlcpy((char *)ap.ap.ssid, s_ap_ssid, sizeof(ap.ap.ssid));
+    ap.ap.ssid_len = strlen(s_ap_ssid);
+    ap.ap.channel = 1;
+    ap.ap.max_connection = AP_MAX_CLIENTS;
+    ap.ap.csa_count = 3;
+    const char *pw = CONFIG_CAPTIVE_WIFI_AP_PASSWORD;
+    if (strlen(pw) >= 8) {
+        strlcpy((char *)ap.ap.password, pw, sizeof(ap.ap.password));
+        ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    } else {
+        if (pw[0]) {
+            ESP_LOGW(TAG, "AP password shorter than 8 characters, AP stays open");
+        }
+        ap.ap.authmode = WIFI_AUTH_OPEN;
+    }
+    esp_wifi_set_mode(mode);
+    esp_wifi_set_config(WIFI_IF_AP, &ap);
+    s_clients = 0;
+    s_idle_since = xTaskGetTickCount();
+    if (!s_wifi_started) {
+        esp_err_t err = esp_wifi_start();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_wifi_start: %s", esp_err_to_name(err));
+        }
+        s_wifi_started = true;
+    }
+
+    /* DHCP option 114 (the server keeps the pointer: static strings only) */
+    esp_netif_dhcps_stop(s_ap_netif);
+    esp_netif_dhcps_option(s_ap_netif, ESP_NETIF_OP_SET, ESP_NETIF_CAPTIVEPORTAL_URI, (void *)uri, strlen(uri));
+    esp_netif_dhcps_start(s_ap_netif);
+}
+
+/* The radio off (the portal time-out, the end of AP only). */
+static void radio_off(void)
+{
+    s_wifi_started = false;                 /* before the stop: no reconnect on its disconnect */
+    s_retry_at = 0;
+    esp_wifi_stop();
+    s_got_ip = false;
+    s_clients = 0;
+    if (s_connected) {
+        s_connected = false;
+        emit(CAPTIVE_WIFI_EVT_STA_DISCONNECTED);
+    }
+}
+
+static void portal_stop(void);
+
+/* Access point only: the station and the portal end first. */
+static void ap_start(void)
+{
+    if (s_ap_only) {
+        return;
+    }
+    ESP_LOGI(TAG, "access point %s only (idle limit %lu s)", s_ap_ssid, (unsigned long)s_ap_idle_s);
+    s_ap_only = true;                       /* stops STA auto-reconnect */
+    s_retry_at = 0;
+    s_bg_try = false;
+    if (s_portal) {
+        portal_stop();                      /* PORTAL_STOPPED; no STA_CONNECTED while s_ap_only */
+    }
+    if (s_wifi_started) {
+        esp_wifi_disconnect();
+    }
+    s_got_ip = false;
+    if (s_connected) {
+        s_connected = false;
+        emit(CAPTIVE_WIFI_EVT_STA_DISCONNECTED);
+    }
+    ap_up(WIFI_MODE_AP, NO_PORTAL_URI);
+    emit(CAPTIVE_WIFI_EVT_AP_STARTED);
+}
+
+/* Access point only ends: radio off, AP_STOPPED. Returns whether it was running. */
+static bool ap_stop(void)
+{
+    taskENTER_CRITICAL(&s_ap_lock);
+    const bool was = s_ap_only;
+    s_ap_only = false;
+    taskEXIT_CRITICAL(&s_ap_lock);
+    if (!was) {
+        return false;
+    }
+    ESP_LOGI(TAG, "access point %s stopped", s_ap_ssid);
+    radio_off();
+    emit(CAPTIVE_WIFI_EVT_AP_STOPPED);
+    return true;
+}
+
 /* ----------------------------------------------------------------- portal */
 
 static void portal_start(void)
@@ -575,37 +683,7 @@ static void portal_start(void)
         esp_wifi_disconnect();
     }
 
-    wifi_config_t ap = {0};
-    strlcpy((char *)ap.ap.ssid, s_ap_ssid, sizeof(ap.ap.ssid));
-    ap.ap.ssid_len = strlen(s_ap_ssid);
-    ap.ap.channel = 1;
-    ap.ap.max_connection = AP_MAX_CLIENTS;
-    ap.ap.csa_count = 3;
-    const char *pw = CONFIG_CAPTIVE_WIFI_AP_PASSWORD;
-    if (strlen(pw) >= 8) {
-        strlcpy((char *)ap.ap.password, pw, sizeof(ap.ap.password));
-        ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    } else {
-        if (pw[0]) {
-            ESP_LOGW(TAG, "AP password shorter than 8 characters, AP stays open");
-        }
-        ap.ap.authmode = WIFI_AUTH_OPEN;
-    }
-    esp_wifi_set_mode(WIFI_MODE_APSTA);     /* STA is needed for scanning */
-    esp_wifi_set_config(WIFI_IF_AP, &ap);
-    if (!s_wifi_started) {
-        esp_err_t err = esp_wifi_start();
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "esp_wifi_start: %s", esp_err_to_name(err));
-        }
-        s_wifi_started = true;
-    }
-
-    /* DHCP option 114: the sign-in page address (the pointer is kept) */
-    static char uri[] = PORTAL_URI;
-    esp_netif_dhcps_stop(s_ap_netif);
-    esp_netif_dhcps_option(s_ap_netif, ESP_NETIF_OP_SET, ESP_NETIF_CAPTIVEPORTAL_URI, uri, strlen(uri));
-    esp_netif_dhcps_start(s_ap_netif);
+    ap_up(WIFI_MODE_APSTA, PORTAL_URI);     /* STA is needed for scanning */
     dns_start();
     http_start();
     emit(CAPTIVE_WIFI_EVT_PORTAL_STARTED);
@@ -636,7 +714,7 @@ static void portal_stop(void)
         s_retry_at = 0;
     }
     emit(CAPTIVE_WIFI_EVT_PORTAL_STOPPED);
-    if (s_got_ip && !s_connected) {
+    if (s_got_ip && !s_connected && !s_ap_only) {
         s_connected = true;
         emit(CAPTIVE_WIFI_EVT_STA_CONNECTED);
     }
@@ -654,10 +732,22 @@ static void worker_task(void *arg)
                 portal_start();
             } else if (cmd == CMD_PORTAL_STOP) {
                 portal_stop();
+            } else if (cmd == CMD_AP_START) {
+                ap_start();
             }
             continue;
         }
         TickType_t now = xTaskGetTickCount();
+
+        /* access point only: no client for the idle limit → down */
+        if (s_ap_only) {
+            const uint32_t idle_s = s_ap_idle_s;
+            if (idle_s && s_clients == 0 && now - s_idle_since >= pdMS_TO_TICKS(idle_s * 1000u) && ap_stop()) {
+                ESP_LOGI(TAG, "access point: no client for %lu s", (unsigned long)idle_s);
+                emit(CAPTIVE_WIFI_EVT_AP_TIMEOUT);
+            }
+            continue;
+        }
         TickType_t retry_at = s_retry_at;
         bool retry_due = retry_at && s_wifi_started && (int32_t)(now - retry_at) >= 0;
 
@@ -710,6 +800,17 @@ static void worker_task(void *arg)
             portal_stop();
             continue;
         }
+#if CONFIG_CAPTIVE_WIFI_PORTAL_IDLE_MIN > 0
+        /* no network stored and no phone for the idle limit: the portal closes, the radio goes off */
+        if (!s_saved.sta.ssid[0] && s_clients == 0 && s_try != TRY_CONNECTING &&
+            s_try != TRY_OK && !s_restore_pending && now - s_idle_since >= PORTAL_IDLE) {
+            ESP_LOGI(TAG, "portal: no client for %d min, radio off", CONFIG_CAPTIVE_WIFI_PORTAL_IDLE_MIN);
+            portal_stop();
+            radio_off();
+            emit(CAPTIVE_WIFI_EVT_PORTAL_TIMEOUT);
+            continue;
+        }
+#endif
         /* portal open: the stored network is never given up, one attempt per pause.
          * Not while the page's own attempt runs or a successful one is closing. */
         if (retry_due && s_try != TRY_CONNECTING && s_try != TRY_OK && !s_bg_try &&
@@ -737,8 +838,25 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
 {
     (void)arg;
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        if (!s_portal) {
+        if (!s_portal && !s_ap_only) {
             esp_wifi_connect();
+        }
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_AP_STACONNECTED) {
+        s_clients++;
+        if (s_ap_only) {
+            ESP_LOGI(TAG, "access point: a client joined (%d)", s_clients);
+            emit(CAPTIVE_WIFI_EVT_AP_CLIENT_CONNECTED);
+        }
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_AP_STADISCONNECTED) {
+        if (s_clients > 0) {
+            s_clients--;
+        }
+        if (s_clients == 0) {
+            s_idle_since = xTaskGetTickCount();
+        }
+        if (s_ap_only) {
+            ESP_LOGI(TAG, "access point: a client left (%d)", s_clients);
+            emit(CAPTIVE_WIFI_EVT_AP_CLIENT_DISCONNECTED);
         }
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
         if (!s_try_cfg_pending) {
@@ -746,6 +864,9 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
         }
         esp_netif_create_ip6_linklocal(s_sta_netif);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        if (s_ap_only) {
+            return;                         /* a late IP of the station that is being ended */
+        }
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "connected, IP " IPSTR, IP2STR(&e->ip_info.ip));
         s_got_ip = true;
@@ -786,8 +907,8 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
             s_connected = false;
             emit(CAPTIVE_WIFI_EVT_STA_DISCONNECTED);
         }
-        if (!s_wifi_started) {
-            return;                         /* captive_wifi_stop() */
+        if (!s_wifi_started || s_ap_only) {
+            return;                         /* captive_wifi_stop(), the access point only */
         }
         if (s_portal) {
             /* the attempt started from the page is retried a few times */
@@ -876,6 +997,7 @@ esp_err_t captive_wifi_init(const char *hostname, captive_wifi_cb_t cb, void *ct
 
 esp_err_t captive_wifi_start(void)
 {
+    ap_stop();                              /* the access point only ends (radio off) */
     s_fail_count = 0;
     s_retry_at = 0;
     s_ever_connected = false;
@@ -897,16 +1019,40 @@ esp_err_t captive_wifi_start(void)
 
 esp_err_t captive_wifi_stop(void)
 {
+    if (ap_stop()) {
+        return ESP_OK;                      /* radio off, AP_STOPPED */
+    }
     portal_stop();
     s_wifi_started = false;                 /* before the stop: no reconnect on its disconnect */
     s_retry_at = 0;
     esp_err_t err = esp_wifi_stop();
     s_got_ip = false;
+    s_clients = 0;
     if (s_connected) {
         s_connected = false;
         emit(CAPTIVE_WIFI_EVT_STA_DISCONNECTED);
     }
     return err;
+}
+
+esp_err_t captive_wifi_start_ap(uint32_t idle_s)
+{
+    if (!s_cmd) {
+        return ESP_ERR_INVALID_STATE;       /* captive_wifi_init() first */
+    }
+    s_ap_idle_s = idle_s;
+    post(CMD_AP_START);
+    return ESP_OK;
+}
+
+bool captive_wifi_ap_active(void)
+{
+    return s_ap_only;
+}
+
+int captive_wifi_ap_clients(void)
+{
+    return s_clients;
 }
 
 bool captive_wifi_is_connected(void)

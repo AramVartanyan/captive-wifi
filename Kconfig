@@ -38,4 +38,16 @@ menu "Captive Wi-Fi"
             portal is open, the stored network is also tried once per pause in the background,
             and the portal closes as soon as it connects. A restarting router needs about 2 min.
 
+    config CAPTIVE_WIFI_PORTAL_IDLE_MIN
+        int "Close the portal after this many minutes without a client (0 = never)"
+        range 0 1440
+        default 0
+        help
+            Only when no network is stored: if no phone joins the setup portal for this long
+            (counted from the start and from the last client leaving), the portal closes and the
+            radio is switched off (CAPTIVE_WIFI_EVT_PORTAL_TIMEOUT) until captive_wifi_start() is
+            called again (a restart, or the application). Saves power on a device that is not
+            meant to be on Wi-Fi. With a stored network the portal stays and keeps trying it.
+            0 keeps the portal open forever (as before 0.4.0).
+
 endmenu
