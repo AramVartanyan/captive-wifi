@@ -50,7 +50,8 @@ ESP32-S2 (ESP-IDF 5.5.4) in [mppt-1k](https://github.com/AramVartanyan/mppt-1k).
 1. `captive_wifi_start()`: a stored network → STA, connect. Failed attempts come in bursts of
    `CONFIG_CAPTIVE_WIFI_RETRY_BURST`, with `CONFIG_CAPTIVE_WIFI_RETRY_PAUSE_S` between bursts — forever.
 2. No credentials, or `CONFIG_CAPTIVE_WIFI_MAX_RETRIES` failed attempts without ever connecting since
-   boot → SoftAP `<prefix>-xxxxxx` (prefix from Kconfig, last 3 bytes of the MAC),
+   boot → SoftAP `<prefix>-xxxxxx` (prefix from Kconfig, last 3 bytes of the device's **base** MAC
+   in lower case — the same as on its label / serial number, e.g. `Solar-810840`),
    open or WPA2 with the Kconfig password.
    While the portal is open and a network is stored, the stored network is **tried in the background**
    once per pause (APSTA mode); as soon as it connects, the portal closes by itself. The device never
@@ -150,9 +151,9 @@ point only mode the component runs no web server at all: port 80 is the applicat
 
 `examples/ap_test` — `idf.py set-target esp32s3 && idf.py flash monitor`, short limits (2 min):
 
-1. Erased flash / no network → the portal `CWTEST-xxxxxx`; no phone for 2 min → `PORTAL_TIMEOUT`, radio
+1. Erased flash / no network → the portal `cwtest-xxxxxx`; no phone for 2 min → `PORTAL_TIMEOUT`, radio
    off (the network disappears from the phone's list).
-2. With a network stored: BOOT short press → `AP_STARTED`; join `CWTEST-xxxxxx` — **no sign-in
+2. With a network stored: BOOT short press → `AP_STARTED`; join `cwtest-xxxxxx` — **no sign-in
    window**; `http://192.168.4.1` shows the page with the client count; `AP_CLIENT_CONNECTED` /
    `_DISCONNECTED` in the log. Leave it → after 2 min `AP_STOPPED`, `AP_TIMEOUT`, back to the router.
 3. BOOT again while the access point runs → back to the router at once (`AP_STOPPED`).

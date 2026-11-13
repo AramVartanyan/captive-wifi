@@ -8,6 +8,13 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [0.4.0] — not yet tested on hardware
 
+### Changed
+- The SoftAP name `<prefix>-xxxxxx` is taken from the device's **base MAC** (`ESP_MAC_BASE`, the one
+  on the label / the serial number) instead of the SoftAP MAC (base + 1 in the last byte), and the
+  6 characters are **lower case** — so the network name, a host name and what the user types in the
+  browser are the same text (e.g. `Solar-810840`). The name of an existing device changes once
+  (the last character and the case).
+
 ### Added
 - Portal idle limit `CONFIG_CAPTIVE_WIFI_PORTAL_IDLE_MIN` (0 = never, the default — as before):
   with **no stored network**, when no phone is on the portal for that long (from the start and from
