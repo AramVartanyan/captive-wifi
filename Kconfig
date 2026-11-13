@@ -4,8 +4,10 @@ menu "Captive Wi-Fi"
         string "SoftAP name prefix (short device name)"
         default "ESP"
         help
-            Short device name used for the setup SoftAP: "<prefix>-XXXXXX", where XXXXXX are
-            the last 3 bytes of the SoftAP MAC address (e.g. "MPPT-1A2B3C", "SOLAR-1A2B3C").
+            Short device name used for the setup SoftAP: "<prefix>-xxxxxx", where xxxxxx are
+            the last 3 bytes of the device's base MAC address in lower case (e.g. "mppt-1a2b3c",
+            "solar-810840") — the same as on its label / serial number. A lower-case prefix lets
+            the application use the same text as its host name.
             At most 24 characters; a longer prefix is cut.
 
     config CAPTIVE_WIFI_AP_PASSWORD

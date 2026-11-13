@@ -980,9 +980,9 @@ esp_err_t captive_wifi_init(const char *hostname, captive_wifi_cb_t cb, void *ct
     }
 
     uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
-    /* "<prefix>-XXXXXX": 24 + 1 + 6 characters + NUL fit s_ap_ssid[32] */
-    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%.24s-%02X%02X%02X",
+    esp_read_mac(mac, ESP_MAC_BASE);        /* the device's own MAC: the same as on its label / serial */
+    /* "<prefix>-xxxxxx": 24 + 1 + 6 characters + NUL fit s_ap_ssid[32] */
+    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%.24s-%02x%02x%02x",
              CONFIG_CAPTIVE_WIFI_AP_SSID_PREFIX, mac[3], mac[4], mac[5]);
 
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
