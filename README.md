@@ -51,7 +51,7 @@ ESP32-S2 (ESP-IDF 5.5.4) in [mppt-1k](https://github.com/AramVartanyan/mppt-1k).
    `CONFIG_CAPTIVE_WIFI_RETRY_BURST`, with `CONFIG_CAPTIVE_WIFI_RETRY_PAUSE_S` between bursts — forever.
 2. No credentials, or `CONFIG_CAPTIVE_WIFI_MAX_RETRIES` failed attempts without ever connecting since
    boot → SoftAP `<prefix>-xxxxxx` (prefix from Kconfig, last 3 bytes of the device's **base** MAC
-   in lower case — the same as on its label / serial number, e.g. `solar-810840`),
+   in lower case — the same as on its label / serial number, e.g. `Solar-810840`),
    open or WPA2 with the Kconfig password.
    While the portal is open and a network is stored, the stored network is **tried in the background**
    once per pause (APSTA mode); as soon as it connects, the portal closes by itself. The device never

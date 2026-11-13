@@ -12,7 +12,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 - The SoftAP name `<prefix>-xxxxxx` is taken from the device's **base MAC** (`ESP_MAC_BASE`, the one
   on the label / the serial number) instead of the SoftAP MAC (base + 1 in the last byte), and the
   6 characters are **lower case** — so the network name, a host name and what the user types in the
-  browser are the same text (e.g. `solar-810840`). The name of an existing device changes once
+  browser are the same text (e.g. `Solar-810840`). The name of an existing device changes once
   (the last character and the case).
 
 ### Added
