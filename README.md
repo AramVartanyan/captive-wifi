@@ -33,7 +33,9 @@ ESP32-S2 (ESP-IDF 5.5.4) in [mppt-1k](https://github.com/AramVartanyan/mppt-1k).
 - After a successful connection the portal stops (10 s later) and the device stays in STA — **no reboot**.
 - Optional (0.4.0): with no stored network the portal closes and the radio goes off after a time
   without any client (`CONFIG_CAPTIVE_WIFI_PORTAL_IDLE_MIN`, off by default).
-- **Access point only** (0.4.0): `captive_wifi_start_ap()` — the same SoftAP, but no portal, no
+- **Access point only** (0.4.0, `CONFIG_CAPTIVE_WIFI_AP_ONLY`, off by default — only for a firmware
+  with its own web interface; without it the component is the portal alone, as before):
+  `captive_wifi_start_ap()` — the same SoftAP, but no portal, no
   station, no DNS catch-all; DHCP tells the phones there is no captive portal (RFC 8910), so no
   sign-in window opens and the application serves its own pages at `http://192.168.4.1`. Client
   joined / left events and an optional idle time-out.
@@ -125,6 +127,7 @@ captive_wifi_start();
 | `CONFIG_CAPTIVE_WIFI_MAX_RETRIES` | 10 | Failed attempts (never connected since boot) before the portal starts |
 | `CONFIG_CAPTIVE_WIFI_RETRY_BURST` | 5 | Connection attempts in a row before a pause |
 | `CONFIG_CAPTIVE_WIFI_RETRY_PAUSE_S` | 60 | Pause between bursts, and between background attempts while the portal is open (10 – 120 s) |
+| `CONFIG_CAPTIVE_WIFI_AP_ONLY` | n | Access point only mode for an application with its own web interface; off: `captive_wifi_start_ap()` returns `ESP_ERR_NOT_SUPPORTED`, its code is not built in |
 | `CONFIG_CAPTIVE_WIFI_PORTAL_IDLE_MIN` | 0 | No network stored: close the portal and switch the radio off after this many minutes without a client (0 = never, 0 – 1440) |
 
 ## Using it in a project

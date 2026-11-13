@@ -7,8 +7,8 @@
  * 114) serving a page that scans networks and stores the chosen credentials.
  * Optional: the portal closes and the radio goes off after a time without a client when no network
  * is stored (CONFIG_CAPTIVE_WIFI_PORTAL_IDLE_MIN); an access-point-only mode for the application's
- * own web interface (captive_wifi_start_ap(), no portal, no station), with client events and an
- * idle time-out.
+ * own web interface (captive_wifi_start_ap(), no portal, no station; CONFIG_CAPTIVE_WIFI_AP_ONLY), with
+ * client events and an idle time-out.
  * Follows the idea of tonyp7/esp32-wifi-manager; structure from the ESP-IDF
  * captive_portal example. Uses driver-independent ESP-IDF APIs only.
  */
@@ -58,7 +58,8 @@ esp_err_t captive_wifi_stop(void);
  * `idle_s` > 0 the access point goes down after `idle_s` without any client — counted from the start
  * and from the last client leaving — and AP_STOPPED, AP_TIMEOUT are sent (radio off; the application
  * may call captive_wifi_start() then, from its own task). Non-blocking. captive_wifi_start() or
- * captive_wifi_stop() end it as well. */
+ * captive_wifi_stop() end it as well. Only with CONFIG_CAPTIVE_WIFI_AP_ONLY (off by default — a
+ * firmware without its own web interface needs only the portal): otherwise ESP_ERR_NOT_SUPPORTED. */
 esp_err_t captive_wifi_start_ap(uint32_t idle_s);
 
 bool        captive_wifi_has_credentials(void);

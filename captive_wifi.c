@@ -18,7 +18,9 @@
 static const char *TAG = "captive_wifi";
 
 #define PORTAL_URI          "http://192.168.4.1/"
+#if CONFIG_CAPTIVE_WIFI_AP_ONLY
 #define NO_PORTAL_URI       "urn:ietf:params:capport:unrestricted"   /* RFC 8910: no captive portal */
+#endif
 #define PORTAL_IDLE         pdMS_TO_TICKS((uint32_t)CONFIG_CAPTIVE_WIFI_PORTAL_IDLE_MIN * 60u * 1000u)
 #define AP_MAX_CLIENTS      4
 #define SCAN_MAX            20
@@ -624,6 +626,7 @@ static void radio_off(void)
 
 static void portal_stop(void);
 
+#if CONFIG_CAPTIVE_WIFI_AP_ONLY
 /* Access point only: the station and the portal end first. */
 static void ap_start(void)
 {
@@ -648,6 +651,7 @@ static void ap_start(void)
     ap_up(WIFI_MODE_AP, NO_PORTAL_URI);
     emit(CAPTIVE_WIFI_EVT_AP_STARTED);
 }
+#endif
 
 /* Access point only ends: radio off, AP_STOPPED. Returns whether it was running. */
 static bool ap_stop(void)
@@ -732,9 +736,12 @@ static void worker_task(void *arg)
                 portal_start();
             } else if (cmd == CMD_PORTAL_STOP) {
                 portal_stop();
-            } else if (cmd == CMD_AP_START) {
+            }
+#if CONFIG_CAPTIVE_WIFI_AP_ONLY
+            else if (cmd == CMD_AP_START) {
                 ap_start();
             }
+#endif
             continue;
         }
         TickType_t now = xTaskGetTickCount();
@@ -1037,12 +1044,17 @@ esp_err_t captive_wifi_stop(void)
 
 esp_err_t captive_wifi_start_ap(uint32_t idle_s)
 {
+#if CONFIG_CAPTIVE_WIFI_AP_ONLY
     if (!s_cmd) {
         return ESP_ERR_INVALID_STATE;       /* captive_wifi_init() first */
     }
     s_ap_idle_s = idle_s;
     post(CMD_AP_START);
     return ESP_OK;
+#else
+    (void)idle_s;
+    return ESP_ERR_NOT_SUPPORTED;           /* CONFIG_CAPTIVE_WIFI_AP_ONLY is off */
+#endif
 }
 
 bool captive_wifi_ap_active(void)

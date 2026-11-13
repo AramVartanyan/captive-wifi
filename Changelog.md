@@ -14,7 +14,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   the last client leaving, not during a page attempt) the portal closes, the radio goes off and
   `CAPTIVE_WIFI_EVT_PORTAL_TIMEOUT` is sent (after `PORTAL_STOPPED`); `captive_wifi_start()` starts
   again. With a stored network the portal stays and keeps trying it, as before.
-- Access point only: `captive_wifi_start_ap(idle_s)` — the SoftAP `<prefix>-xxxxxx` at 192.168.4.1
+- Access point only (`CONFIG_CAPTIVE_WIFI_AP_ONLY`, off by default — a firmware without its own web
+  interface keeps the portal only; then `captive_wifi_start_ap()` returns `ESP_ERR_NOT_SUPPORTED`):
+  `captive_wifi_start_ap(idle_s)` — the SoftAP `<prefix>-xxxxxx` at 192.168.4.1
   without the portal, the station and the DNS catch-all; DHCP option 114 says "no captive portal"
   (`urn:ietf:params:capport:unrestricted`, RFC 8910), so phones open no sign-in window and the
   application serves its own pages on port 80. Events `AP_STARTED`, `AP_STOPPED`,
