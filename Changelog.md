@@ -6,6 +6,26 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] — not yet tested on hardware
+
+### Added
+- Portal idle limit `CONFIG_CAPTIVE_WIFI_PORTAL_IDLE_MIN` (0 = never, the default — as before):
+  with **no stored network**, when no phone is on the portal for that long (from the start and from
+  the last client leaving, not during a page attempt) the portal closes, the radio goes off and
+  `CAPTIVE_WIFI_EVT_PORTAL_TIMEOUT` is sent (after `PORTAL_STOPPED`); `captive_wifi_start()` starts
+  again. With a stored network the portal stays and keeps trying it, as before.
+- Access point only (`CONFIG_CAPTIVE_WIFI_AP_ONLY`, off by default — a firmware without its own web
+  interface keeps the portal only; then `captive_wifi_start_ap()` returns `ESP_ERR_NOT_SUPPORTED`):
+  `captive_wifi_start_ap(idle_s)` — the SoftAP `<prefix>-xxxxxx` at 192.168.4.1
+  without the portal, the station and the DNS catch-all; DHCP option 114 says "no captive portal"
+  (`urn:ietf:params:capport:unrestricted`, RFC 8910), so phones open no sign-in window and the
+  application serves its own pages on port 80. Events `AP_STARTED`, `AP_STOPPED`,
+  `AP_CLIENT_CONNECTED`, `AP_CLIENT_DISCONNECTED`; with `idle_s` > 0 the access point goes down
+  after `idle_s` without a client (`AP_STOPPED`, then `AP_TIMEOUT`, radio off).
+  `captive_wifi_start()` and `captive_wifi_stop()` end it too. `captive_wifi_ap_active()`,
+  `captive_wifi_ap_clients()`.
+- The new events are added at the end of `captive_wifi_event_t`; the old values do not change.
+
 ## [0.3.0] — 2026-11-08, tested on hardware
 
 Tested on ESP32-S3 (ESP-IDF 5.5.4) in solar-heater-hap, starting from erased flash: no stored
